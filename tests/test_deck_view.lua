@@ -60,6 +60,25 @@ suite.test("Remaining greys spent cards; Full Deck greys nothing", function()
     DeckViewUI.destroy(g)
 end)
 
+suite.test("Run Info opens the deck overlay on its Poker Hands panel", function()
+    local g = game_with_deck()
+    g.STATE = g.STATES.SELECTING_HAND
+
+    T.assert_true(g:toggle_run_info())
+    T.assert_true(g._deck_view_open)
+    T.assert_true(g._deck_view_run_info)
+    T.assert_true(g._deck_view_hand_panel_open)
+    T.assert_eq(g._deck_view_hand_panel_t, 1, "the first panel is ready on the opening frame")
+
+    T.assert_true(g:toggle_run_info(), "ZL toggles the info panel while the deck stays open")
+    T.assert_false(g._deck_view_run_info)
+    T.assert_false(g._deck_view_hand_panel_open)
+    T.assert_true(g._deck_view_open)
+
+    T.assert_true(g:toggle_deck_view(), "ZR closes the overlay")
+    T.assert_false(g._deck_view_open)
+end)
+
 suite.test("tallies count suits, faces, aces and numbered cards", function()
     local g = game_with_deck()
 

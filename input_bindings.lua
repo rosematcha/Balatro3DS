@@ -72,6 +72,19 @@ local BUTTON_LABELS = {
     lefttrigger = "ZL",
 }
 
+--- Cell positions in `gamepad_ui_3ds_opt_1x.png`. The sheet keeps the reference game's
+--- order (`reference/Balatro/functions/UI_definitions.lua:6129-6148`) but has one 3DS row
+--- instead of platform-specific rows.
+InputBindings.BUTTON_SPRITE_INDICES = {
+    a = 0, b = 1, x = 2, y = 3,
+    leftshoulder = 4, rightshoulder = 5,
+    lefttrigger = 6, righttrigger = 7,
+    start = 8, back = 9,
+    dpup = 10, dpright = 11, dpdown = 12, dpleft = 13,
+    left = 14, right = 15, leftstick = 16, rightstick = 17,
+    guide = 19,
+}
+
 local ROLE_HINTS = {
     confirm = "Tap: Select; Hold+D-pad: Reorder",
     cancel = "Tap: Deselect / Sort / Sell; Hold+D-pad: Sweep",
@@ -285,6 +298,12 @@ end
 function InputBindings.button_label(button)
     if button == nil or button == "" then return "-" end
     return BUTTON_LABELS[button] or tostring(button)
+end
+
+--- Returns the reduced 3DS button-sheet cell for a LÖVE gamepad button.
+---@return number|nil
+function InputBindings.button_sprite_index(button)
+    return InputBindings.BUTTON_SPRITE_INDICES[button]
 end
 
 function InputBindings.slot_label(role, slot, bindings)

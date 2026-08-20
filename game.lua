@@ -2528,6 +2528,9 @@ function Game:enter_pause_menu()
     if self.STATE ~= self.STATES.PAUSED then
         self._pause_prev_state = self.STATE
     end
+    -- Load this tiny sheet as the pause modal opens, before its Controls page can draw.
+    -- CTR image construction reads from SD and can stall a visible frame.
+    self:warm_atlases({ "gamepad_ui_3ds" })
     self.dragging = nil
     self._pause_save_error = nil
     self._pause_continue_rect = nil
@@ -3721,6 +3724,7 @@ function Game:enter_deck_view()
     self.active_tooltip_card = nil
     self._deck_view_hand_panel_open = false
     self._deck_view_hand_panel_t = 0
+    self._deck_view_run_info = false
     self._deck_view_open = true
     DeckViewUI.build(self)
     return true
@@ -3732,6 +3736,7 @@ function Game:exit_deck_view()
     self.active_tooltip_card = nil
     self._deck_view_hand_panel_open = false
     self._deck_view_hand_panel_t = 0
+    self._deck_view_run_info = false
     DeckViewUI.destroy(self)
     self._deck_view_open = false
     return true
@@ -3742,6 +3747,22 @@ function Game:toggle_deck_view()
         return self:exit_deck_view()
     end
     return self:enter_deck_view()
+end
+
+--- The first Run Info tab in the reference is Poker Hands (`UI_definitions.lua:3129-3149`).
+--- The port already presents those same live hand levels in DeckViewUI's top-screen panel, so
+--- ZL opens that panel directly instead of maintaining a second copy of the data-heavy view.
+function Game:toggle_run_info()
+    if self._deck_view_open then
+        self._deck_view_run_info = not self._deck_view_run_info
+        self._deck_view_hand_panel_open = self._deck_view_run_info
+        return true
+    end
+    if not self:enter_deck_view() then return false end
+    self._deck_view_run_info = true
+    self._deck_view_hand_panel_open = true
+    self._deck_view_hand_panel_t = 1
+    return true
 end
 
 function Game:current_resume_state()
@@ -7175,14 +7196,30 @@ function Game:draw_bottom_pause()
                             row = row,
                         }
                         self._controls_role_rects[#self._controls_role_rects + 1] = r
-                        local label = InputBindings.slot_label(role, slot, bindings)
+                        local button = InputBindings.get_role_slot_button(role, slot, bindings)
                         local listening = is_controls_bind_listening(role, slot)
                         local focused = is_controls_bind_focused(slot, row)
                         local color = self.C.RED
                         if listening then
                             color = self.C.ORANGE
                         end
-                        draw_btn(r, label, color, focused or listening)
+                        draw_btn(r, "", color, focused or listening)
+                        if button then
+                            local pip_size = 14
+                            local pip_h = math.ceil(pip_size * 34 / 32)
+                            local pip_x = r.x + math.floor((r.w - pip_size) * 0.5 + 0.5)
+                            local pip_y = r.y + math.floor((r.h - pip_h) * 0.5 + 0.5)
+                            if not self:draw_button_pip(button, pip_x, pip_y, pip_size) then
+                                -- The label remains a graceful fallback if the sheet cannot load.
+                                love.graphics.setColor(self.C.WHITE)
+                                love.graphics.setFont(self.FONTS.PIXEL.SMALL)
+                                love.graphics.printf(InputBindings.button_label(button), r.x, r.y + 3, r.w, "center")
+                            end
+                        else
+                            love.graphics.setColor(self.C.WHITE)
+                            love.graphics.setFont(self.FONTS.PIXEL.SMALL)
+                            love.graphics.printf("-", r.x, r.y + 3, r.w, "center")
+                        end
                     end
                 end
             end
@@ -16809,6 +16846,26 @@ function Game:atlas_cell_quad(atlas, index)
     return quad, cell_w, cell_h
 end
 
+--- Draw one controller binding pip. The reference attaches these beside focusable UI
+--- controls (`functions/button_callbacks.lua:405-421`); this port shows them in its
+--- compact Controls grid. Keep this separate from button labels so remapped controls
+--- always use the matching physical 3DS glyph.
+---@return boolean drawn
+function Game:draw_button_pip(button, x, y, size)
+    local index = InputBindings.button_sprite_index(button)
+    if index == nil then return false end
+
+    local atlas = self:ensure_asset_atlas_loaded("gamepad_ui_3ds")
+    if not atlas or not atlas.image then return false end
+    local quad, cell_w, cell_h = self:atlas_cell_quad(atlas, index)
+    if not quad then return false end
+
+    size = tonumber(size) or 14
+    local scale = size / cell_w
+    love.graphics.draw(atlas.image, quad, x, y, 0, scale, scale)
+    return true
+end
+
 function Game:unload_animation_atlas(name)
     if not name or not self.ANIMATION_ATLAS then return false end
     local atlas = self.ANIMATION_ATLAS[name]
@@ -16905,7 +16962,9 @@ function Game:set_render_settings()
             -- `centers` + `cards_2` the way Card:draw does would pull 4 MiB of atlas onto the
             -- title screen for one 72x95 sprite, so it is pre-composited into its own sheet.
             {name = "title_ace", path = "resources/textures/1x/title_ace.png",px=72,py=95},
-            {name = 'gamepad_ui', path = "resources/textures/1x/gamepad_ui.png",px=32,py=32},
+            -- A 640x34 3DS-only strip. Its 20 cells retain Balatro's binding-pip order,
+            -- but declaring the single row is essential: CTR reports padded texture sizes.
+            {name = 'gamepad_ui_3ds', path = "resources/textures/gamepad_ui_3ds_opt_1x.png",px=32,py=34,cols=20,rows=1},
             {name = 'tags', path = "resources/textures/1x/tags.png",px=34,py=34,cols=10},
             {name = 'stickers', path = "resources/textures/1x/stickers.png",px=72,py=95},
             {name = 'chips', path = "resources/textures/1x/chips.png",px=30,py=30},
@@ -17007,6 +17066,7 @@ function Game:set_render_settings()
             self.ASSET_ATLAS[self.asset_atli[i].name].px = self.asset_atli[i].px
             self.ASSET_ATLAS[self.asset_atli[i].name].py = self.asset_atli[i].py
             self.ASSET_ATLAS[self.asset_atli[i].name].cols = self.asset_atli[i].cols
+            self.ASSET_ATLAS[self.asset_atli[i].name].rows = self.asset_atli[i].rows
         end
         for i=1, #self.asset_images do
             self.ASSET_ATLAS[self.asset_images[i].name] = {}
@@ -17017,6 +17077,7 @@ function Game:set_render_settings()
             self.ASSET_ATLAS[self.asset_images[i].name].type = self.asset_images[i].type
             self.ASSET_ATLAS[self.asset_images[i].name].px = self.asset_images[i].px
             self.ASSET_ATLAS[self.asset_images[i].name].py = self.asset_images[i].py
+            self.ASSET_ATLAS[self.asset_images[i].name].rows = self.asset_images[i].rows
         end
 
         for _, v in pairs(G.I.SPRITE) do

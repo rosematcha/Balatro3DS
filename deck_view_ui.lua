@@ -1,6 +1,7 @@
 --- Bottom-screen overlay: remaining draw-pile cards as interactable Card nodes (one row per non-empty suit).
 local DeckViewUI = {}
 local NumberFormat = require("number_format")
+local InputBindings = require("input_bindings")
 local SCREEN_W, SCREEN_H = 320, 240
 local CARD_W, CARD_H = 71, 95
 local TAP_THRESHOLD = 15
@@ -706,7 +707,18 @@ function DeckViewUI.draw_footer(game, footer_h)
         and (tonumber(game._deck_view_hand_panel_t) or 0) <= 0.01 then
         footer = footer .. "  Right: Hand Levels"
     end
-    love.graphics.printf(footer, sw_w + 6, y + 3, SCREEN_W - sw_w - 8, "center")
+    local footer_x = sw_w + 6
+    local footer_w = SCREEN_W - sw_w - 8
+    love.graphics.printf(footer, footer_x, y + 3, footer_w, "center")
+
+    -- Keep the New 3DS shortcuts visible where the player is already looking for deck
+    -- controls. ZL mirrors the reference's Run Info / Poker Hands entry; ZR closes this view.
+    if InputBindings and InputBindings.triggers_enabled and InputBindings.triggers_enabled()
+        and game.draw_button_pip then
+        love.graphics.setColor(game.C.WHITE)
+        game:draw_button_pip("lefttrigger", footer_x + footer_w - 44, y + 2, 10)
+        game:draw_button_pip("righttrigger", footer_x + footer_w - 18, y + 2, 10)
+    end
 end
 
 --- Owned vouchers as a readable list. Names and full descriptions, because the point of the

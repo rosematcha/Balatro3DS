@@ -37,6 +37,21 @@ suite.test("declared columns win over the padded runtime size", function()
     T.assert_eq(ly, 0, "still on row zero")
 end)
 
+suite.test("the 3DS button strip remains one row when CTR pads it", function()
+    local game = bootstrap.new_game(1)
+    local atlas = game.ASSET_ATLAS.gamepad_ui_3ds
+    T.assert_eq(atlas.path, "resources/textures/gamepad_ui_3ds_opt_1x.png")
+    T.assert_eq(atlas.cols, 20)
+    T.assert_eq(atlas.rows, 1)
+
+    atlas = game:ensure_asset_atlas_loaded("gamepad_ui_3ds")
+    local x, y, w, h = game:atlas_cell_quad(atlas, 7):getViewport()
+    T.assert_eq(x, 224, "ZR is the eighth cell")
+    T.assert_eq(y, 0, "and never spills into padded rows")
+    T.assert_eq(w, 32)
+    T.assert_eq(h, 34)
+end)
+
 suite.test("the quad's source size is the padded size the sampler sees", function()
     local game = bootstrap.new_game(1)
     local atlas = fake_atlas(36, 36, 24, 28, 1024, 1024)

@@ -103,6 +103,9 @@ function love.load()
     PerfFlags.apply()
 
     G = Game()
+    -- Binding pips are visible during play. Build their tiny texture under the loading
+    -- screen, never from a visible UI frame.
+    G:ensure_asset_atlas_loaded("gamepad_ui_3ds")
     Loading.step(0.6)
     -- After Game() so a cue that fails to decode can warn through G.DEBUG. 69 Vorbis
     -- decodes off SD is the longest single step of boot, so it drives the bar itself.
@@ -432,6 +435,15 @@ function love.gamepadpressed(_, button)
             return
         end
         return
+    end
+    -- ZL/ZR are physical New 3DS controls. The runtime reports them as axes, which is
+    -- normalised above; Old 3DS never enables that path (`input_bindings.lua:332-370`).
+    if InputBindings.triggers_enabled and InputBindings.triggers_enabled() then
+        if button == "lefttrigger" and G.toggle_run_info then
+            if G:toggle_run_info() then return end
+        elseif button == "righttrigger" and G.toggle_deck_view then
+            if G:toggle_deck_view() then return end
+        end
     end
     if G._deck_view_open then
         if DeckViewUI.handle_gamepad(G, button) then

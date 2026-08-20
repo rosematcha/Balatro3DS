@@ -29,6 +29,14 @@ suite.test("the default layout is the Switch one", function()
     T.assert_eq(InputBindings.get_button_for_role("play", b), "y")
 end)
 
+suite.test("3DS pips use the reduced sheet's reference cell order", function()
+    T.assert_eq(InputBindings.button_sprite_index("a"), 0)
+    T.assert_eq(InputBindings.button_sprite_index("y"), 3)
+    T.assert_eq(InputBindings.button_sprite_index("leftshoulder"), 4)
+    T.assert_eq(InputBindings.button_sprite_index("righttrigger"), 7)
+    T.assert_eq(InputBindings.button_sprite_index("not_a_button"), nil)
+end)
+
 suite.test("menus take either button of each pair", function()
     local b = InputBindings.default_settings().bindings
     T.assert_true(InputBindings.is_menu_activate("a", b))

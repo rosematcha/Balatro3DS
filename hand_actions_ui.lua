@@ -199,12 +199,31 @@ function HandActionsUI.draw(game)
     local font = P.SMALL
     love.graphics.setFont(font)
     local text_y = y + math.floor((BAR_H - font:getHeight()) * 0.5 + 0.5)
-    love.graphics.setColor(play_ok and C.WHITE or C.UI.TEXT_INACTIVE)
-    love.graphics.printf("Play", R.play.x, text_y, R.play.w, "center")
-    love.graphics.setColor(disc_ok and C.WHITE or C.UI.TEXT_INACTIVE)
-    love.graphics.printf("Discard", R.discard.x, text_y, R.discard.w, "center")
 
-    draw_sort_icon(R.sort.x + R.sort.w * 0.5, y + BAR_H * 0.5,
+    local function draw_binding(rect, role, label, colour)
+        local button = game.get_button_for_role and game:get_button_for_role(role) or nil
+        local pip_w = 12
+        love.graphics.setColor(C.WHITE)
+        local icon_drawn = button and game.gamepad_focus_visible and game:gamepad_focus_visible()
+            and game.draw_button_pip and game:draw_button_pip(button, rect.x + 8, y + 5, pip_w)
+        love.graphics.setColor(colour)
+        if icon_drawn then
+            love.graphics.printf(label, rect.x + 22, text_y, rect.w - 26, "center")
+        else
+            love.graphics.printf(label, rect.x, text_y, rect.w, "center")
+        end
+    end
+
+    draw_binding(R.play, "play", "Play", play_ok and C.WHITE or C.UI.TEXT_INACTIVE)
+    draw_binding(R.discard, "discard", "Discard", disc_ok and C.WHITE or C.UI.TEXT_INACTIVE)
+
+    local sort_button = game.get_button_for_role and game:get_button_for_role("cancel") or nil
+    love.graphics.setColor(C.WHITE)
+    if sort_button and game.gamepad_focus_visible and game:gamepad_focus_visible()
+        and game.draw_button_pip then
+        game:draw_button_pip(sort_button, R.sort.x + 3, y + 5, 12)
+    end
+    draw_sort_icon(R.sort.x + R.sort.w * 0.5 + 5, y + BAR_H * 0.5,
         sort_ok and C.BLACK or C.UI.TEXT_INACTIVE)
 
     love.graphics.setColor(1, 1, 1, 1)
