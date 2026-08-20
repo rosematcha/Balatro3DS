@@ -79,6 +79,18 @@ suite.test("every deck's backing lands on its own cell inside the sheet", functi
     end
 end)
 
+suite.test("deck back indices preserve the reference linear atlas positions", function()
+    local expected = {
+        b_red = 0, b_blue = 14, b_yellow = 15, b_green = 16, b_black = 17,
+        b_magic = 21, b_nebula = 3, b_ghost = 20, b_abandoned = 24,
+        b_checkered = 22, b_zodiac = 31, b_painted = 25, b_anaglyph = 30,
+        b_plasma = 18, b_erratic = 23, b_challenge = 28,
+    }
+    for id, index in pairs(expected) do
+        T.assert_eq(DECK_DEFS_BY_ID[id].pos, index, id .. " reference back cell")
+    end
+end)
+
 suite.test("an enhanced card is hidden by the deck's backing, not by its enhancement", function()
     local game = bootstrap.new_game(7)
     game:apply_deck_config("b_black")

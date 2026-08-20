@@ -846,7 +846,11 @@ function CollectionUI.handle_touchreleased(game, id, x, y)
     if released and dist < TAP_THRESHOLD then
         CollectionUI.toggle_tooltip(game, released)
     elseif released and dist >= TAP_THRESHOLD then
-        CollectionUI.layout_grid(game)
+        -- Collection areas are a loose surface in the reference: a dragged card stays where
+        -- it was dropped until the page is rebuilt. Moveable normally springs VT back to T, so
+        -- promote the finger-owned visual position to the target before ending the drag.
+        released.T.x = released.VT.x
+        released.T.y = released.VT.y
         CollectionUI.clear_tooltips(game)
     end
     game.dragging = nil

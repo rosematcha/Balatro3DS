@@ -10,6 +10,32 @@ local suite = T.suite()
 
 bootstrap.load()
 local CollectionCatalog = require("collection_catalog")
+local CollectionUI = require("collection_ui")
+
+suite.test("the collection only lists playable decks", function()
+    local decks = CollectionCatalog.build_deck_entries()
+    T.assert_eq(#decks, 15, "Challenge Deck is an internal challenge-run card back")
+    for _, entry in ipairs(decks) do
+        T.assert_false(entry.id == "b_challenge", "internal decks do not occupy collection slots")
+    end
+end)
+
+suite.test("a collection card stays where it is dropped until the grid refreshes", function()
+    local g = bootstrap.new_game(5100)
+    local node = CollectionUI.CollectionStaticNode(10, 12, 71, 95, { id = "test" })
+    g.STATE = g.STATES.PAUSED
+    g._collection_over_run = true
+    g._menu_sub_state = "collection_grid"
+    g._collection_nodes = { node }
+
+    g:touchpressed(1, 20, 22)
+    g:touchmoved(1, 140, 110, 120, 88)
+    g:touchreleased(1, 140, 110)
+
+    T.assert_eq(node.T.x, node.VT.x, "the dropped x coordinate becomes the resting target")
+    T.assert_eq(node.T.y, node.VT.y, "the dropped y coordinate becomes the resting target")
+    T.assert_eq(g.dragging, nil, "the drag is released normally")
+end)
 
 suite.test("a seal is undiscovered until a card carrying it is seen", function()
     local g = bootstrap.new_game(5101)

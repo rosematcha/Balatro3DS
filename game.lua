@@ -1760,6 +1760,11 @@ local AUTOSAVE_STATES = {
 local BACKDROP_STATES = {
     MENU          = "menu",
     SPLASH        = "menu",
+    -- A resumed snapshot skips BLIND_SELECT and restores straight to the last stable
+    -- run state. These states normally inherit the blind palette from that screen, but
+    -- on Continue they must establish it themselves or the menu's splash shader remains.
+    SELECTING_HAND = "blind",
+    ROUND_EVAL     = "blind",
     TAROT_PACK    = "tarot",
     PLANET_PACK   = "planet",
     SPECTRAL_PACK = "spectral",
@@ -14740,6 +14745,13 @@ function Game:touchpressed(id, x, y)
 end
 
 function Game:touchmoved(id, x, y, dx, dy)
+    -- Collection can also borrow the screen over a paused run. It owns the complete touch
+    -- gesture there, not only the initial press (`Game:touchpressed`).
+    if self._collection_over_run and self.STATE == self.STATES.PAUSED
+        and self._menu_sub_state == "collection_grid" then
+        CollectionUI.handle_touchmoved(self, id, x, y, dx, dy)
+        return
+    end
     if self.STATE == self.STATES.MENU and self._menu_sub_state == "collection_grid" then
         CollectionUI.handle_touchmoved(self, id, x, y, dx, dy)
         return
@@ -14805,6 +14817,11 @@ function Game:touchmoved(id, x, y, dx, dy)
 end
 
 function Game:touchreleased(id, x, y)
+    if self._collection_over_run and self.STATE == self.STATES.PAUSED
+        and self._menu_sub_state == "collection_grid" then
+        CollectionUI.handle_touchreleased(self, id, x, y)
+        return
+    end
     if self.STATE == self.STATES.MENU and self._menu_sub_state == "collection_grid" then
         CollectionUI.handle_touchreleased(self, id, x, y)
         return

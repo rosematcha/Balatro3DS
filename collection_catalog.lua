@@ -199,15 +199,19 @@ end
 function CollectionCatalog.build_deck_entries()
     local out = {}
     for _, def in ipairs(DECK_DEFS or {}) do
-        out[#out + 1] = {
-            id = def.id,
-            category = "decks",
-            node_kind = "deck",
-            name = def.name or def.id,
-            order = tonumber(def.order) or 9999,
-            def = def,
-            pos = def.pos,
-        }
+        -- Challenge Deck is an internal card back used to initialise challenge runs, not a
+        -- collectible deck. Keeping it here created an empty sixteenth collection slot/page.
+        if def.omit ~= true then
+            out[#out + 1] = {
+                id = def.id,
+                category = "decks",
+                node_kind = "deck",
+                name = def.name or def.id,
+                order = tonumber(def.order) or 9999,
+                def = def,
+                pos = def.pos,
+            }
+        end
     end
     table.sort(out, sort_entries)
     return out

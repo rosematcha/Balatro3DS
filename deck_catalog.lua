@@ -178,7 +178,9 @@ DECK_DEFS = {
         id = "b_challenge",
         name = "Challenge Deck",
         order = 16,
-        pos = 32,
+        -- The port repacks the reference's 7x5 sheet into ten columns while preserving
+        -- linear order. `{x=0,y=4}` therefore remains index 28; index 32 is Purple Seal.
+        pos = 28,
         unlocked = true,
         stake = 1,
         config = {},

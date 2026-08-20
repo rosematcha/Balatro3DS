@@ -240,4 +240,31 @@ suite.test("continue runs its read, restore and save-back as separate steps", fu
     T.assert_eq(fresh.STAGE, fresh.STAGES.RUN, "and the run comes back")
 end)
 
+--- A normal hand inherits its palette from blind select. Continue restores directly into the
+--- hand, though, so it must establish that palette instead of leaving the menu splash active.
+suite.test("continue restores the blind backdrop when resuming a hand", function()
+    local game = bootstrap.new_game(4114)
+    game._pending_deck_id = "b_red"
+    game._pending_stake_id = "stake_white"
+    game:start_run_from_main_menu()
+    local snapshot = game:build_run_snapshot()
+    snapshot.resume_state = game.STATES.SELECTING_HAND
+    T.assert_true(game:write_run_snapshot(snapshot))
+
+    local fresh = bootstrap.new_game(4115)
+    local calls = {}
+    fresh._backdrop = {
+        is_supported = function() return true end,
+        set_menu = function() calls[#calls + 1] = "menu" end,
+        set_state = function(name) calls[#calls + 1] = name end,
+        set_boss_colour = function() calls[#calls + 1] = "boss" end,
+    }
+
+    T.assert_true(fresh:begin_continue_saved_run())
+    run_to_completion(fresh)
+
+    T.assert_eq(fresh.STATE, fresh.STATES.SELECTING_HAND, "the saved hand is restored")
+    T.assert_eq(calls[#calls], "blind", "Continue replaces the menu splash with the blind backdrop")
+end)
+
 return suite
