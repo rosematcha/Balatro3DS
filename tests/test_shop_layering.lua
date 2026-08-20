@@ -88,6 +88,24 @@ suite.test("a node with no shop slot has no tag to draw", function()
     T.assert_false(ShopUI.draw_price_tag_for_node(g, nil) == true)
 end)
 
+suite.test("a selected shop card exposes an attached Buy control", function()
+    local g = shop_with_offers(4309)
+    local node = g.shop_offer_nodes[1]
+    g.active_tooltip_joker = node
+    g.can_buy_shop_offer = function() return true end
+
+    ShopUI.draw_shop_item_actions(g)
+    local rect = g._shop_action_rects and g._shop_action_rects[1]
+    T.assert_not_nil(rect, "the selected card has a control")
+    T.assert_eq(rect.key, "offer:1")
+    T.assert_true(rect.y > node:get_collision_rect().y, "the control is attached below its card")
+
+    local bought_slot = nil
+    g.buy_shop_joker = function(_, slot) bought_slot = slot return true end
+    T.assert_true(ShopUI.handle_touch(g, rect.x + 1, rect.y + 1), "the attached control claims its tap")
+    T.assert_eq(bought_slot, 1, "the control buys its owning card")
+end)
+
 --- The buttons and the price tags carry the shop's drop shadow; the spine label was the one
 --- piece of chrome still printed flat, which read as background rather than as a label.
 suite.test("a panel header is drawn with its shadow behind it", function()

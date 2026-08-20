@@ -4911,6 +4911,7 @@ function Game:draw()
             dragged_shop:draw()
             self:draw_price_tag_for_node(dragged_shop)
         end
+        ShopUI.draw_shop_item_actions(self)
     end
     -- The trays the pulled-down rows sit on, drawn here rather than with the rest of the
     -- bottom UI: a tray drawn before the node pass would end up under the hand, and the point
@@ -14675,6 +14676,9 @@ function Game:touchpressed(id, x, y)
         if self:handle_round_win_touch(x, y) then return end
     end
     if self.STATE == self.STATES.SHOP then
+        -- Card-attached Buy/Redeem/Open controls have priority over the card body;
+        -- otherwise pressing the control would start a drag instead of acting.
+        if self:handle_shop_touch(x, y) then return end
         local node = self:get_node_at(x, y)
         if node and node_is_shop_offer(self, node) then
             begin_node_drag(self, id, x, y, node)
@@ -14696,7 +14700,6 @@ function Game:touchpressed(id, x, y)
             begin_node_drag(self, id, x, y, node)
             return
         end
-        if self:handle_shop_touch(x, y) then return end
         self:clear_shop_selection()
         return
     end

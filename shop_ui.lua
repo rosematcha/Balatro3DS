@@ -455,6 +455,142 @@ function ShopUI.draw_shop_button(game, param)
     end
 end
 
+-- The desktop UI parents a Buy/Redeem/Open control to each shop card
+-- (`reference/Balatro/functions/UI_definitions.lua:333-357`).  There is not
+-- enough vertical room on the lower 3DS screen to leave every control open,
+-- so the port exposes the selected card's control only.  It remains attached
+-- to that card rather than asking the player to drag to a screen-wide target.
+local function selected_shop_action(game)
+    if game.dragging then return nil end
+    for i, node in ipairs(game.shop_offer_nodes or {}) do
+        if node and game.active_tooltip_joker == node then
+            local offer = (game.shop_offers or {})[i]
+            if offer then
+                return {
+                    key = "offer:" .. i,
+                    node = node,
+                    slot = i,
+                    label = "BUY",
+                    color = game.C.MONEY,
+                    enabled = game:can_buy_shop_offer(i),
+                    activate = function() return game:buy_shop_joker(i) end,
+                    offer = offer,
+                }
+            end
+        end
+    end
+    for i, node in ipairs(game.shop_voucher_nodes or {}) do
+        if node and tonumber(game.active_tooltip_shop_voucher_slot) == i then
+            local offer = (game.shop_voucher_offers or {})[i]
+            if offer then
+                local enabled = game:can_afford_price(game:get_shop_voucher_price(offer))
+                    and not game:_voucher_already_owned(offer.id)
+                return {
+                    key = "voucher:" .. i,
+                    node = node,
+                    slot = i,
+                    label = "REDEEM",
+                    color = game.C.GREEN,
+                    enabled = enabled,
+                    activate = function() return game:buy_shop_voucher(i) end,
+                }
+            end
+        end
+    end
+    for i, node in ipairs(game.shop_booster_nodes or {}) do
+        if node and tonumber(game.active_shop_booster_slot) == i then
+            local offer = (game.shop_booster_offers or {})[i]
+            if offer then
+                return {
+                    key = "booster:" .. i,
+                    node = node,
+                    slot = i,
+                    label = "OPEN",
+                    color = game.C.GREEN,
+                    enabled = game:can_afford_price(game:get_shop_booster_price(offer)),
+                    activate = function() return game:buy_shop_booster(i) end,
+                }
+            end
+        end
+    end
+    return nil
+end
+
+local function action_rect_for_node(node)
+    if not node or not node.get_collision_rect then return nil end
+    local card = node:get_collision_rect()
+    if not card then return nil end
+    return {
+        x = math.floor(card.x),
+        -- Booster and voucher cards reach the screen edge. Keep their attached
+        -- control usable by letting it overlap the card's lower edge there.
+        y = math.min(240 - 17 - 2, math.floor(card.y + card.h + 2)),
+        w = math.max(36, math.floor(card.w)), h = 17,
+    }
+end
+
+--- Draw the selected shop card's attached action button and keep its touch rect.
+--- `Game:touchpressed` handles it before beginning a card drag.
+function ShopUI.draw_shop_item_actions(game)
+    local action = selected_shop_action(game)
+    game._shop_action_rects = {}
+    if not action or not game:shop_nodes_interactive() then return end
+    local rect = action_rect_for_node(action.node)
+    if not rect then return end
+
+    rect.key = action.key
+    rect.enabled = action.enabled
+    game._shop_action_rects[1] = rect
+    ShopUI.draw_shop_button(game, {
+        x = rect.x, y = rect.y, w = rect.w, h = rect.h,
+        color = action.enabled and action.color or game.C.GREY,
+        parts = { { text = action.label, font = game.FONTS.PIXEL.SMALL } },
+    })
+
+    -- Consumables have the reference's second, side-mounted Buy & Use action.
+    -- It is kept compact so it does not consume the shelf's already scarce height.
+    local offer = action.offer
+    if offer and (offer.kind == "tarot" or offer.kind == "planet" or offer.kind == "spectral") then
+        local can_use = game:can_afford_price(game:get_shop_offer_price(offer))
+            and game:shop_offer_consumable_use_enabled(offer)
+        local use_rect = {
+            x = rect.x + rect.w + 2, y = rect.y, w = 42, h = rect.h,
+            key = action.key .. ":use", enabled = can_use,
+        }
+        -- Side attachment in the reference; clamp to the screen's right edge on 3DS.
+        if use_rect.x + use_rect.w > 318 then
+            use_rect.x = math.max(2, rect.x - use_rect.w - 2)
+        end
+        game._shop_action_rects[2] = use_rect
+        ShopUI.draw_shop_button(game, {
+            x = use_rect.x, y = use_rect.y, w = use_rect.w, h = use_rect.h,
+            color = can_use and game.C.RED or game.C.GREY,
+            parts = { { text = "BUY+USE", font = game.FONTS.PIXEL.SMALL } },
+        })
+    end
+end
+
+local function point_in_rect(x, y, rect)
+    return rect and x >= rect.x and x <= rect.x + rect.w and y >= rect.y and y <= rect.y + rect.h
+end
+
+function ShopUI.handle_shop_action_touch(game, x, y)
+    local action = selected_shop_action(game)
+    if not action then return false end
+    for _, rect in ipairs(game._shop_action_rects or {}) do
+        if point_in_rect(x, y, rect) then
+            if not rect.enabled then return true end
+            if rect.key == action.key then
+                action.activate()
+            elseif rect.key == action.key .. ":use" then
+                game:buy_and_use_shop_consumable(action.slot)
+            end
+            return true
+        end
+    end
+    return false
+end
+
 function ShopUI.draw_bottom_shop(game)
     -- Everything below hangs off panel_y, so the whole shop (buttons, sub
     -- panels, node layouts, tap rects) rides the scene-transition slide.
@@ -586,6 +722,7 @@ end
 
 function ShopUI.handle_touch(game, x, y)
     if game._shop_slide then return true end
+    if ShopUI.handle_shop_action_touch(game, x, y) then return true end
     if game:_point_in_rect_simple(x, y, game._shop_continue_rect) then
         Sfx.play_button()
         game:continue_from_shop()
