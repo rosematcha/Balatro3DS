@@ -106,6 +106,28 @@ suite.test("a selected shop card exposes an attached Buy control", function()
     T.assert_eq(bought_slot, 1, "the control buys its owning card")
 end)
 
+suite.test("shop controls show their current button binding in button mode", function()
+    local g = shop_with_offers(4310)
+    g.active_tooltip_joker = g.shop_offer_nodes[1]
+    g.can_buy_shop_offer = function() return true end
+    g.input_mode = "gamepad"
+
+    local pips = {}
+    g.draw_button_pip = function(_, button)
+        pips[#pips + 1] = button
+        return true
+    end
+    ShopUI.draw_shop_item_actions(g)
+
+    T.assert_eq(#pips, 1, "the selected action receives one prompt")
+    T.assert_eq(pips[1], g:get_button_for_role("confirm"), "it follows the remappable Buy binding")
+
+    g.input_mode = "touch"
+    pips = {}
+    ShopUI.draw_shop_item_actions(g)
+    T.assert_eq(#pips, 0, "touch mode keeps the action uncluttered")
+end)
+
 --- The buttons and the price tags carry the shop's drop shadow; the spine label was the one
 --- piece of chrome still printed flat, which read as background rather than as a label.
 suite.test("a panel header is drawn with its shadow behind it", function()

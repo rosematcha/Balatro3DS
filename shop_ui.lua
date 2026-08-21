@@ -418,6 +418,22 @@ function ShopUI.draw_shop_button(game, param)
         local ix, iy, iw, ih = draw_button_with_shadow(x, y, w, h, 4, 2, color, game.C.BLOCK.SHADOW, 2)
         love.graphics.setColor(game.C.WHITE)
 
+        -- A prompt belongs on controls that the pad can actually activate. It is
+        -- only shown while the pad owns focus, matching the hand action bar and
+        -- keeping the touch layout clean.
+        local prompt_w = 0
+        local button = param.button
+        if button and game.gamepad_focus_visible and game:gamepad_focus_visible()
+            and game.draw_button_pip then
+            local pip_w = math.min(12, math.max(8, ih - 4))
+            local pip_h = math.ceil(pip_w * 34 / 32)
+            local pip_x = ix + 3
+            local pip_y = iy + math.floor((ih - pip_h) * 0.5 + 0.5)
+            if game:draw_button_pip(button, pip_x, pip_y, pip_w) then
+                prompt_w = pip_w + 5
+            end
+        end
+
         local parts = param.parts
         if not parts then
             parts = {}
@@ -431,7 +447,7 @@ function ShopUI.draw_shop_button(game, param)
             local font = part.font or game.FONTS.PIXEL.SMALL
             -- Drop a size if the label would spill past the button's inner width. `next_smaller`
             -- is strictly smaller by construction, so this terminates at the bottom of the ladder.
-            while font:getWidth(part.text) > iw do
+            while font:getWidth(part.text) > iw - prompt_w do
                 local smaller = Fonts.next_smaller(game, font)
                 if not smaller then break end
                 font = smaller
@@ -446,7 +462,8 @@ function ShopUI.draw_shop_button(game, param)
             local font = part.resolved_font
             local size = font:getHeight()
             love.graphics.setFont(font)
-            love.graphics.printf(part.text, ix, math.floor(ink_y - size * INK_TOP_RATIO), iw, "center")
+            love.graphics.printf(part.text, ix + prompt_w, math.floor(ink_y - size * INK_TOP_RATIO),
+                iw - prompt_w, "center")
             ink_y = ink_y + size * INK_HEIGHT_RATIO + LINE_GAP
         end
     else
@@ -544,6 +561,7 @@ function ShopUI.draw_shop_item_actions(game)
     ShopUI.draw_shop_button(game, {
         x = rect.x, y = rect.y, w = rect.w, h = rect.h,
         color = action.enabled and action.color or game.C.GREY,
+        button = game:get_button_for_role("confirm"),
         parts = { { text = action.label, font = game.FONTS.PIXEL.SMALL } },
     })
 
@@ -565,6 +583,7 @@ function ShopUI.draw_shop_item_actions(game)
         ShopUI.draw_shop_button(game, {
             x = use_rect.x, y = use_rect.y, w = use_rect.w, h = use_rect.h,
             color = can_use and game.C.RED or game.C.GREY,
+            button = game:get_button_for_role("play"),
             parts = { { text = "BUY+USE", font = game.FONTS.PIXEL.SMALL } },
         })
     end
@@ -611,6 +630,8 @@ function ShopUI.draw_bottom_shop(game)
         cache = {
             continue = {
                 x = 0, y = 0, w = 74, h = 45,
+                -- Leaving the shop is a held Cancel gesture (`main.lua:547-550`),
+                -- not a one-press action, so it deliberately has no pip.
                 parts = {
                     { text = "Next", font = game.FONTS.PIXEL.BUTTON },
                     { text = "Round", font = game.FONTS.PIXEL.BUTTON },
@@ -618,6 +639,7 @@ function ShopUI.draw_bottom_shop(game)
             },
             reroll = {
                 x = 0, y = 0, w = 74, h = 45,
+                button = game:get_button_for_role("discard"),
                 parts = {
                     { text = "Reroll", font = game.FONTS.PIXEL.BUTTON },
                     { text = "", font = game.FONTS.PIXEL.BUTTON_PRICE },
@@ -640,6 +662,7 @@ function ShopUI.draw_bottom_shop(game)
     shop_reroll_rect.x = panel_x + padding
     shop_reroll_rect.y = shop_continue_rect.y + shop_continue_rect.h + padding
     shop_reroll_rect.color = reroll_color
+    shop_reroll_rect.button = game:get_button_for_role("discard")
     shop_reroll_rect.parts[2].text = "$" .. tostring(reroll_cost)
 
     local continue_hit = cache.continue_hit
