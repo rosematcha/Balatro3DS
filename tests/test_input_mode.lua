@@ -144,13 +144,14 @@ suite.test("the first press after touch restores focus instead of acting on it",
     T.assert_false(g:consumes_focus_restore_press("a"), "and once focus is visible nothing is swallowed")
 end)
 
-suite.test("cancel is only swallowed where it acts on the focused item", function()
+suite.test("sell is swallowed where it acts on the focused item", function()
     local g = game_with_hand(9109)
     g:note_input_mode("touch")
     T.assert_false(g:consumes_focus_restore_press("b"), "in the hand cancel deselects and sorts")
+    T.assert_false(g:consumes_focus_restore_press("x"), "X discards from the hand")
 
     g._gamepad_focus_layer = "jokers"
-    T.assert_true(g:consumes_focus_restore_press("b"), "on the joker row it sells the focused joker")
+    T.assert_true(g:consumes_focus_restore_press("x"), "on the joker row X sells the focused joker")
 end)
 
 suite.test("states without a hidden focus target swallow nothing", function()

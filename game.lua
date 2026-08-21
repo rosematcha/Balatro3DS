@@ -15581,7 +15581,7 @@ function Game:toggle_hand_sort()
     return true
 end
 
---- Confirm/cancel routed to a pulled-down panel (select/use vs sell). Shared by the
+--- Confirm/discard routed to a pulled-down panel (select/use vs sell). Shared by the
 --- screens whose own UI must yield those buttons while a panel holds gamepad focus
 --- (blind select, cashout).
 function Game:handle_bottom_inventory_button(button)
@@ -15597,7 +15597,7 @@ function Game:handle_bottom_inventory_button(button)
         return false
     end
 
-    if self:is_role(button, "cancel") then
+    if self:is_role(button, "discard") then
         if layer == "jokers" and self.jokers_on_bottom then
             return self:gamepad_joker_sell()
         end
@@ -15700,12 +15700,10 @@ function Game:gamepad_consumable_sell()
 end
 
 --- Is the cancel button the hand's right now -- deselect on a tap, sweep on a hold -- rather
---- than some other screen's back/sell button?
+--- than some other screen's back button?
 ---
 --- Checked when the button goes down as well as when it comes up (`main.lua`), because the two
---- can differ: selling the last joker with B empties the row and hands focus straight back to
---- the hand, and without this the release would land on the hand and clear the selection the
---- player never touched.
+--- can differ after an inventory action hands focus back to the hand mid-press.
 ---@return boolean
 function Game:hand_cancel_gesture_available()
     if self._deck_view_open then return false end
@@ -15758,8 +15756,8 @@ function Game:handle_gamepad_selecting_hand(button)
         end
     end
 
-    if self:is_role(button, "discard") then
-        if layer == "hand" and self.hand and self.hand:has_selection() then
+    if self:is_role(button, "discard") and layer == "hand" then
+        if self.hand and self.hand:has_selection() then
             -- Every reference button click rings (`engine/ui.lua:989`); the touch bar
             -- already does this in `hand_actions_ui`, the pad path did not.
             Sfx.play_button()
@@ -15769,10 +15767,9 @@ function Game:handle_gamepad_selecting_hand(button)
         return false
     end
 
-    if self:is_role(button, "cancel") then
-        -- On the hand, cancel resolves on release (`Game:try_gamepad_hand_cancel_tap`): it is
-        -- also the sweep-select hold, and a press that deselected on the way down would empty
-        -- the selection the sweep is about to build.
+    if self:is_role(button, "discard") then
+        -- X discards only from the hand. On a pulled-down inventory row it is the dedicated
+        -- sell action, leaving B free for its hand deselect/sort and sweep gestures.
         if layer == "jokers" then
             return self:gamepad_joker_sell()
         elseif layer == "consumables" then
@@ -15824,12 +15821,12 @@ function Game:handle_gamepad_booster_hand_button(button)
 
     if layer == "consumables" then
         if self:is_role(button, "confirm") then return self:gamepad_consumable_use() end
-        if self:is_role(button, "cancel") then return self:gamepad_consumable_sell() end
+        if self:is_role(button, "discard") then return self:gamepad_consumable_sell() end
     end
 
     if layer == "jokers" then
         if self:is_role(button, "confirm") then return self:gamepad_joker_press_select() end
-        if self:is_role(button, "cancel") then return self:gamepad_joker_sell() end
+        if self:is_role(button, "discard") then return self:gamepad_joker_sell() end
     end
 
     return false
@@ -15932,9 +15929,8 @@ function Game:consumes_focus_restore_press(button)
     if FOCUS_RESTORE_DIRECTIONS[button] then return true end
     local role = self.get_role_for_button and self:get_role_for_button(button)
     if role == "confirm" then return true end
-    -- Cancel is sell on the pulled-down rows and deselect/sort in the hand; only the former
-    -- reads the focus target.
-    if role == "cancel" then return self:get_gamepad_focus_layer() ~= "hand" end
+    -- Discard is sell on pulled-down inventory rows and reads the focused item.
+    if role == "discard" then return self:get_gamepad_focus_layer() ~= "hand" end
     return false
 end
 
@@ -16226,13 +16222,13 @@ function Game:handle_gamepad_shop(button)
 
     if layer == "consumables" then
         if self:is_role(button, "confirm") then return self:gamepad_consumable_use() end
-        if self:is_role(button, "cancel") then return self:gamepad_consumable_sell() end
+        if self:is_role(button, "discard") then return self:gamepad_consumable_sell() end
         return false
     end
 
     if layer == "jokers" then
         if self:is_role(button, "confirm") then return self:gamepad_joker_press_select() end
-        if self:is_role(button, "cancel") then return self:gamepad_joker_sell() end
+        if self:is_role(button, "discard") then return self:gamepad_joker_sell() end
         return false
     end
 
@@ -16303,13 +16299,13 @@ function Game:handle_gamepad_booster(button)
 
     if layer == "jokers" then
         if self:is_role(button, "confirm") then return self:gamepad_joker_press_select() end
-        if self:is_role(button, "cancel") then return self:gamepad_joker_sell() end
+        if self:is_role(button, "discard") then return self:gamepad_joker_sell() end
         return false
     end
 
     if layer == "consumables" then
         if self:is_role(button, "confirm") then return self:gamepad_consumable_use() end
-        if self:is_role(button, "cancel") then return self:gamepad_consumable_sell() end
+        if self:is_role(button, "discard") then return self:gamepad_consumable_sell() end
         return false
     end
 
@@ -16653,9 +16649,7 @@ function Game:is_consumable_reorder_mode()
     return self:get_gamepad_focus_layer() == "consumables"
 end
 
---- Cancel doubles as the sell button, so a hold that began on a pulled-down row must not turn
---- into a hand sweep when selling the last item hands focus back to the hand mid-hold. The
---- gesture is armed on the press (`main.lua`) and only then.
+--- Cancel is exclusively the hand's sweep gesture; selling uses X on pulled-down inventory.
 function Game:is_sweep_select_mode()
     if not self:is_role_held("cancel") then return false end
     if not self._cancel_gesture_armed then return false end

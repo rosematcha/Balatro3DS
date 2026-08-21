@@ -97,14 +97,18 @@ suite.test("a B tap with nothing selected sorts the hand instead", function()
     T.assert_eq(g._hand_sort_by_rank, by_rank, "and flips back")
 end)
 
-suite.test("B still sells from a pulled-down row", function()
+suite.test("X sells from a pulled-down row while B remains the hand cancel button", function()
     local g = hand_game()
     T.assert_true(g:add_joker_by_def("j_joker"))
     T.assert_true(g:toggle_jokers_pulled())
     T.assert_eq(g:get_gamepad_focus_layer(), "jokers")
     local money = g.money
 
-    T.assert_true(g:handle_gamepad_selecting_hand("b"), "B sells the focused joker")
+    T.assert_false(g:handle_gamepad_selecting_hand("b"), "B does not sell the focused joker")
+    T.assert_eq(#g.jokers, 1)
+    T.assert_eq(g.money, money)
+
+    T.assert_true(g:handle_gamepad_selecting_hand("x"), "X sells the focused joker")
     T.assert_eq(#g.jokers, 0)
     T.assert_true(g.money > money)
 end)
@@ -124,22 +128,15 @@ suite.test("holding B is the sweep, and its release does not deselect", function
     T.assert_eq(#g.hand.selected, 2, "and the D-pad extends it")
 end)
 
---- B is sell as well as deselect, and selling the last joker hands focus straight back to the
---- hand. Neither the tap nor the sweep may follow it there.
-suite.test("a B press that began on the joker row keeps its hands off the hand", function()
+--- Selling with X must not disturb a selected hand after the last Joker hands focus back to it.
+suite.test("an X press that began on the joker row keeps its hands off the hand", function()
     local g = hand_game(5153)
     T.assert_true(g:add_joker_by_def("j_joker"))
     T.assert_true(g:toggle_jokers_pulled())
     g.hand:toggle_selection(g.hand.card_nodes[1])
 
-    local armed = g:hand_cancel_gesture_available()
-    T.assert_false(armed, "the press is not the hand's")
-    g._cancel_gesture_armed = armed
-    g:set_role_held("cancel", true, 0)
-
-    T.assert_true(g:handle_gamepad_selecting_hand("b"), "it sells")
+    T.assert_true(g:handle_gamepad_selecting_hand("x"), "it sells")
     T.assert_eq(g:get_gamepad_focus_layer(), "hand", "and the empty row gives focus back")
-    T.assert_false(g:is_sweep_select_mode(), "the hold does not become a sweep")
     T.assert_eq(#g.hand.selected, 1, "and the selection is untouched")
 end)
 

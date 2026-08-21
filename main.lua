@@ -409,8 +409,7 @@ function love.gamepadpressed(_, button)
             G:enter_card_select_mode()
         end
         -- Cancel's hand gestures (tap to deselect or sort, hold to sweep) are decided here,
-        -- while the button is going down and before any handler can move the focus. Cancel is
-        -- also sell and back, and those can hand focus to the hand mid-press.
+        -- while the button is going down and before any handler can move the focus.
         if role == "cancel" then
             G._sweep_seeded = false
             G._cancel_gesture_armed = G.hand_cancel_gesture_available

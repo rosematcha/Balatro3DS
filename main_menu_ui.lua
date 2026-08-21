@@ -89,7 +89,7 @@ MainMenuUI.HOW_TO_PLAY_PAGES = {
             "A: Use consumable, or pick a joker",
             "   (pick two jokers to swap them)",
             "Hold A + Left/Right: Reorder",
-            "B: Sell",
+            "X: Sell",
         },
     },
     {

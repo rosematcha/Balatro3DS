@@ -87,8 +87,8 @@ InputBindings.BUTTON_SPRITE_INDICES = {
 
 local ROLE_HINTS = {
     confirm = "Tap: Select; Hold+D-pad: Reorder",
-    cancel = "Tap: Deselect / Sort / Sell; Hold+D-pad: Sweep",
-    discard = "Tap: Discard / Reroll",
+    cancel = "Tap: Deselect / Sort; Hold+D-pad: Sweep",
+    discard = "Tap: Discard / Reroll / Sell focused inventory",
     play = "Tap: Play / Buy & Use",
     shoulder_l = "Toggle jokers panel",
     shoulder_r = "Toggle consumables panel",
