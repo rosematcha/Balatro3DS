@@ -287,9 +287,7 @@ suite.test("sfx.lua does not preload cues without a port event", function()
         "could not find the CUES table in sfx.lua")
     local removed = {
         "crumpleLong1", "crumpleLong2", "explosion1", "magic_crumple",
-        "magic_crumple2", "magic_crumple3", "voice1", "voice2", "voice3",
-        "voice4", "voice5", "voice6", "voice7", "voice8", "voice9",
-        "voice10", "voice11", "whoosh", "whoosh_long",
+        "magic_crumple2", "magic_crumple3", "whoosh", "whoosh_long",
     }
     for _, cue in ipairs(removed) do
         T.assert_false(block:find('"' .. cue .. '"', 1, true) ~= nil,

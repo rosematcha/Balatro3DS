@@ -46,6 +46,8 @@ local CUES = {
     "gong", "highlight1", "highlight2", "holo1", "multhit1", "multhit2",
     "negative", "other1", "paper1", "polychrome1", "slice1", "tarot1",
     "tarot2", "whoosh1", "whoosh2", "win",
+    "timpani", "voice1", "voice2", "voice3", "voice4", "voice5", "voice6",
+    "voice7", "voice8", "voice9", "voice10", "voice11",
 }
 
 --- Shared cue lists for the convenience wrappers. Module scope so a play call never
@@ -281,6 +283,24 @@ function M.play_random(codes, ...)
     local idx = random(extra + 1)
     if idx == 1 then return M.play(codes) end
     return M.play((select(idx - 1, ...)))
+end
+
+--- Jimbo chatter uses eleven tiny shipped syllables. Keep the dispatch literal so the sound
+--- audit can prove every possible cue exists; the index itself is cosmetic RNG only.
+function M.play_voice(index, pitch, vol)
+    local i = math.max(1, math.min(11, math.floor(tonumber(index) or random(11))))
+    if i == 1 then return M.play("voice1", pitch, vol)
+    elseif i == 2 then return M.play("voice2", pitch, vol)
+    elseif i == 3 then return M.play("voice3", pitch, vol)
+    elseif i == 4 then return M.play("voice4", pitch, vol)
+    elseif i == 5 then return M.play("voice5", pitch, vol)
+    elseif i == 6 then return M.play("voice6", pitch, vol)
+    elseif i == 7 then return M.play("voice7", pitch, vol)
+    elseif i == 8 then return M.play("voice8", pitch, vol)
+    elseif i == 9 then return M.play("voice9", pitch, vol)
+    elseif i == 10 then return M.play("voice10", pitch, vol)
+    end
+    return M.play("voice11", pitch, vol)
 end
 
 --- Decode every non-streamed cue up front so nothing pays an SD read plus a Vorbis

@@ -108,6 +108,10 @@ end)
 
 suite.test("shop controls show their current button binding in button mode", function()
     local g = shop_with_offers(4310)
+    -- Pinned rather than left to the roll: a consumable offer draws a second, side-mounted
+    -- BUY+USE control (`shop_ui.lua:571`), and which kind lands in slot 1 shifts with the
+    -- unlock state the rest of the suite accumulates. The branch reads `kind` and nothing else.
+    g.shop_offers[1].kind = "joker"
     g.active_tooltip_joker = g.shop_offer_nodes[1]
     g.can_buy_shop_offer = function() return true end
     g.input_mode = "gamepad"

@@ -701,6 +701,7 @@ function TopUI:draw(screen)
             love.graphics.pop()
         end
     end
+    if G.draw_tag_activation then G:draw_tag_activation() end
 
     -- Owned inventory on top screen (same layer as jokers; above tags / bottom-screen content).
     local draw_jokers_top = G and G.jokers_on_bottom ~= true and n > 0

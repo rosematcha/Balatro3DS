@@ -1,6 +1,7 @@
 
 local MainMenuUI = {}
 local CollectionUI = require("collection_ui")
+local TicketStrip = require("ticket_strip")
 local ProfileUI = require("profile_ui")
 local BuildFlags = require("build_flags")
 local Benchmark = (not BuildFlags.release) and require("benchmark") or nil
@@ -244,6 +245,34 @@ local ACE_BOB_HZ = 0.666
 function MainMenuUI.draw_top(screen, game)
     if game._menu_sub_state == "collection_menu" or game._menu_sub_state == "collection_grid" then
         CollectionUI.draw_top(screen,game)
+        return
+    end
+    if game._menu_sub_state == "challenges" then
+        local def = (CHALLENGE_DEFS or {})[tonumber(game._challenge_selected) or 1]
+        local unlocked = def and game:is_challenge_unlocked(def.id)
+        love.graphics.setColor(game.C.BLOCK.BACK)
+        love.graphics.rectangle("fill", 0, 0, 400, 240)
+        if def then
+            TicketStrip.draw(game, {
+                x = 18, y = 18, w = 364, h = 54, stub_w = 72,
+                stub = unlocked and (game:is_challenge_completed(def.id) and "DONE" or "READY") or "LOCKED",
+                title = unlocked and def.name or "Challenge Locked",
+                detail = string.format("Ticket %02d / %02d", tonumber(game._challenge_selected) or 1,
+                    #(CHALLENGE_DEFS or {})),
+                stub_color = unlocked and (game:is_challenge_completed(def.id) and game.C.GREEN or game.C.RED)
+                    or game.C.UI.BACKGROUND_INACTIVE,
+            })
+            love.graphics.setFont(game.FONTS.PIXEL.SMALL)
+            for i, fact in ipairs(unlocked and TicketStrip.challenge_facts(def) or {
+                "Win White Stake with five different decks to begin.",
+            }) do
+                if i > 6 then break end
+                TicketStrip.draw(game, {
+                    x = 34, y = 82 + (i - 1) * 24, w = 332, h = 20, stub_w = 34,
+                    stub = string.format("%02d", i), title = fact, stub_color = game.C.BLUE,
+                })
+            end
+        end
         return
     end
 
@@ -1587,10 +1616,11 @@ function MainMenuUI.draw_challenges(game)
         local r = { x = 28, y = 46 + (row - 1) * 15, w = 264, h = 13, index = idx }
         game._challenge_rects.rows[#game._challenge_rects.rows + 1] = r
         local chosen = idx == selected
+        local unlocked = game:is_challenge_unlocked(d.id)
         love.graphics.setColor(chosen and C.RED or C.PANEL)
         love.graphics.rectangle("fill", r.x, r.y, r.w, r.h, 3, 3)
-        love.graphics.setColor(C.WHITE)
-        love.graphics.printf(d.name, r.x + 6, r.y + 2, r.w - 28, "left")
+        love.graphics.setColor(unlocked and C.WHITE or C.UI.TEXT_INACTIVE)
+        love.graphics.printf(unlocked and d.name or "Locked", r.x + 6, r.y + 2, r.w - 28, "left")
         if game:is_challenge_completed(d.id) then
             love.graphics.setColor(C.GREEN)
             love.graphics.printf("X", r.x + r.w - 18, r.y + 2, 12, "center")
@@ -1603,7 +1633,10 @@ function MainMenuUI.draw_challenges(game)
     button(game._challenge_rects.prev, "<", C.MULT)
     button(game._challenge_rects.next, ">", C.MULT)
     button(game._challenge_rects.back, "Back", C.MULT)
-    button(game._challenge_rects.play, "Play", C.GREEN)
+    local selected_def = defs[selected]
+    local can_play = selected_def and game:is_challenge_unlocked(selected_def.id)
+    button(game._challenge_rects.play, can_play and "Play" or "Locked",
+        can_play and C.GREEN or C.UI.BACKGROUND_INACTIVE)
 end
 
 function MainMenuUI._touch_challenges(game, x, y)
@@ -1614,7 +1647,10 @@ function MainMenuUI._touch_challenges(game, x, y)
     if r.prev and game:_point_in_rect_simple(x, y, r.prev) then game._challenge_page = math.max(1, (game._challenge_page or 1) - 1); return true end
     if r.next and game:_point_in_rect_simple(x, y, r.next) then game._challenge_page = math.min(2, (game._challenge_page or 1) + 1); return true end
     if r.back and game:_point_in_rect_simple(x, y, r.back) then game._menu_sub_state = "main"; Sfx.play("cancel"); return true end
-    if r.play and game:_point_in_rect_simple(x, y, r.play) then return game:start_challenge_run((CHALLENGE_DEFS or {})[game._challenge_selected].id) end
+    if r.play and game:_point_in_rect_simple(x, y, r.play) then
+        local def = (CHALLENGE_DEFS or {})[game._challenge_selected]
+        return def and game:start_challenge_run(def.id) or false
+    end
     return false
 end
 

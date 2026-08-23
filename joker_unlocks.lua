@@ -106,6 +106,18 @@ JokerUnlocks.CAREER_STATS = {
     "c_most_money",
     "c_win_streak",
     "c_current_streak",
+    -- Voucher unlock progression shares the profile's career-stat table.
+    "c_shop_dollars_spent",
+    "c_shop_rerolls",
+    "c_tarot_reading_used",
+    "c_planetarium_used",
+    "c_cards_played",
+    "c_cards_discarded",
+    "c_tarots_bought",
+    "c_planets_bought",
+    "c_round_interest_cap_streak",
+    "c_blank_redeems",
+    "c_playing_cards_bought",
 }
 
 --- Jokers exempt from the unlock filter entirely. The reference exempts rarity 4 in

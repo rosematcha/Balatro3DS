@@ -27,8 +27,6 @@
 --- given. The per-size files do not exist there, so `font_for` falls back to the shared face at
 --- the *same* size - the profile still changes the metrics, so nest previews the layout change
 --- even though it cannot preview the sharpness change.
-local PerformanceLab = require("performance_lab")
-
 local Fonts = {}
 
 local SHARED_PATH = "resources/fonts/m6x11plus.ttf"
@@ -228,6 +226,34 @@ function Fonts.fit(game, font, text, max_w)
     return candidate
 end
 
+--- Largest face at or below `font` whose *wrapped* block fits `max_w` x `max_h`.
+---
+--- The height counterpart of `Fonts.fit`, and needed for the same reason: `printf` neither
+--- clips nor scrolls, so a description that wraps to one more line than the box allows just
+--- draws over whatever is under it. Card and stake rules are the variable-length text this
+--- exists for, and the ladder differs by profile -- SMALL is 11 px shared and 13 px native --
+--- so the same string is three lines on one and four on the other.
+---@param game table
+---@param font love.Font
+---@param text string
+---@param max_w number
+---@param max_h number
+---@return love.Font
+function Fonts.fit_block(game, font, text, max_w, max_h)
+    if not font or not font.getWrap or type(max_w) ~= "number" or type(max_h) ~= "number" then
+        return font
+    end
+    text = tostring(text or "")
+    local candidate = font
+    while true do
+        local _, lines = candidate:getWrap(text, max_w)
+        if #lines * candidate:getHeight() <= max_h then return candidate end
+        local smaller = Fonts.next_smaller(game, candidate)
+        if not smaller then return candidate end
+        candidate = smaller
+    end
+end
+
 --- One line for the Performance Lab panel: which ladder is live, and how many of its faces
 --- actually came from a per-size sheet.
 ---
@@ -244,17 +270,5 @@ function Fonts.status_line(game)
     local native = (pixel and pixel.NATIVE_FACES) or 0
     return string.format("FONT %s  native %d/%d faces", profile, native, faces)
 end
-
--- Native is the default now, so the toggle runs the other way: switching it OFF returns to the
--- historical shared ladder, which keeps the A/B available against what was released before.
-PerformanceLab.register("crisp_fonts", {
-    available = true,
-    label = "Crisp fonts",
-    default = true,
-    on_change = function(enabled)
-        if not G then return end
-        Fonts.apply(G, enabled and "native" or "shared")
-    end,
-})
 
 return Fonts

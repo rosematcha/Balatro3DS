@@ -1050,13 +1050,33 @@ end
 ---@param alpha number|nil lifecycle fade, 1 when the joker is settled
 function Joker:draw_sub_pos_overlay(draw_x, draw_y, alpha)
     if not self.face_up then return end
-    love.graphics.setColor(1, 1, 1, alpha or 1)
+    local id = self.def and self.def.id
+    local t = Fx and Fx.time and Fx.time() or 0
+    local seed = self.edition_seed and self:edition_seed() or 0
+    local ox, oy, rotation = 0, 0, 0
+    local tint_r, tint_g, tint_b = 1, 1, 1
+    if id == "j_hologram" then
+        -- Reference animates this layer through the hologram shader. PICA200 cannot accept
+        -- that GLSL, so one existing layer gets a slow phase-shifted float and cyan/violet
+        -- colour cycle: no extra draw command and no transient mesh allocation.
+        ox = math.sin(t * 1.7 + seed * 8) * 1.25
+        oy = math.cos(t * 1.2 + seed * 5) * 1.0
+        tint_r = 0.78 + 0.18 * math.sin(t * 0.9 + seed)
+        tint_g = 0.88
+        tint_b = 1
+    elseif self.def and tonumber(self.def.rarity) == 4 then
+        -- The five Legendary floating layers use the same cheap transform stand-in.
+        ox = math.sin(t * 0.8 + seed * 11) * 0.75
+        oy = math.cos(t * 0.65 + seed * 7) * 1.25
+        rotation = math.sin(t * 0.55 + seed * 9) * 0.012
+    end
+    love.graphics.setColor(tint_r, tint_g, tint_b, alpha or 1)
     if self.sub_sprite and self.sub_sprite.image then
-        love.graphics.draw(self.sub_sprite.image, draw_x, draw_y, 0, 1, 1)
+        love.graphics.draw(self.sub_sprite.image, draw_x + ox, draw_y + oy, rotation, 1, 1)
         return
     end
     if not self.sub_atlas or not self.sub_atlas.image or not self.sub_quad then return end
-    love.graphics.draw(self.sub_atlas.image, self.sub_quad, draw_x, draw_y, 0, 1, 1)
+    love.graphics.draw(self.sub_atlas.image, self.sub_quad, draw_x + ox, draw_y + oy, rotation, 1, 1)
 end
 
 function Joker:draw_sticker_overlays(draw_x, draw_y)

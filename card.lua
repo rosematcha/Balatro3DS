@@ -162,11 +162,14 @@ function Card:init(X, Y, W, H, card, center, params)
 
     -- which atlases to use for each visual layer
     -- back: `centers` cell from selected deck (`DECK_DEFS.pos`) or enhancement
-    -- face: standard playing-card front in `centers` (rank/suit overlay from `cards_2`)
+    -- face: standard playing-card front in `centers` (rank/suit overlay from the selected deck atlas)
     self.back_atlas_name = self.params.back_atlas_name or "centers"
     self.face_atlas_name = self.params.face_atlas_name or self.back_atlas_name
 
-    self.rank_atlas_name = self.params.rank_atlas_name or "cards_2"
+    self._rank_atlas_explicit = self.params.rank_atlas_name ~= nil
+    self.rank_atlas_name = self.params.rank_atlas_name
+        or (G and G.get_playing_card_atlas_name and G:get_playing_card_atlas_name())
+        or "cards_1"
     -- Seals: separate atlas + per-seal indices (`SEAL_ATLAS_INDICES`), not rank/suit math.
     self.seal_atlas_name = self.params.seal_atlas_name or "centers"
 

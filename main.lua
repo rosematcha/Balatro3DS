@@ -48,6 +48,7 @@ local YouWinUI = require "you_win"
 local MainMenuUI = require "main_menu_ui"
 local ProfileUI = require "profile_ui"
 local DeckViewUI = require "deck_view_ui"
+local RunInfoUI = require "run_info_ui"
 local InputBindings = require "input_bindings"
 local RenderProfiler = require "render_profiler"
 local PerformanceLab = require "performance_lab"
@@ -55,6 +56,8 @@ local Stereo = require "stereo"
 local Backdrop = require("backdrop")
 local Tilt = require "tilt"
 local ScreenWipe = require "screen_wipe"
+local TutorialUI = require "tutorial_ui"
+local Milestones = require "milestone_queue"
 Sfx = require "sfx"
 Fx = require "fx"
 Loading.step(0.5)
@@ -262,10 +265,15 @@ function love.draw(screen)
             YouWinUI.drawTop(G)
         elseif G._deck_view_open then
             DeckViewUI.draw_top(screen, G)
+        elseif G._run_info_open then
+            RunInfoUI.draw_top(screen, G)
         else
             Top:draw(screen)
+            TutorialUI.draw_top(G)
         end
     end
+
+    if screen ~= "bottom" then Milestones.draw(G) end
 
     -- Over everything, and outside the shake translate above: the cover is not part of the
     -- playfield. Only reached while the wipe is still fading in or out; once it is opaque the
@@ -445,9 +453,11 @@ function love.gamepadpressed(_, button)
         end
     end
     if G._deck_view_open then
-        if DeckViewUI.handle_gamepad(G, button) then
-            return
-        end
+        DeckViewUI.handle_gamepad(G, button)
+        return
+    end
+    if G._run_info_open then
+        RunInfoUI.handle_gamepad(G, button)
         return
     end
     if button == "back" and G.toggle_deck_view then

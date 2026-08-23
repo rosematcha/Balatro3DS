@@ -3,6 +3,18 @@
 local GameOverUI = {}
 local DynaText = require("dyna_text")
 local NumberFormat = require("number_format")
+local TicketStrip = require("ticket_strip")
+local LOSS_QUIPS = {
+    "Maybe Go Fish is more our speed...", "We folded like a cheap suit!",
+    "Time for us to shuffle off and try again!", "The house always wins!",
+    "Looks like the joke's on us!", "What a flop!",
+}
+
+function GameOverUI.quip(game)
+    local index = ((math.floor(tonumber(game.round) or 0) + math.floor(tonumber(game.ante) or 0))
+        % #LOSS_QUIPS) + 1
+    return LOSS_QUIPS[index]
+end
 local SUMMARY_VALUES = {}
 
 local GAME_OVER_TITLE_TEXT = DynaText.new({
@@ -32,6 +44,7 @@ function GameOverUI.populate_summary(game, out)
     -- already tracked all three and showed them only on the win screen.
     out.cards_purchased = math.max(0, math.floor(tonumber(game.run_cards_purchased) or 0))
     out.times_rerolled = math.max(0, math.floor(tonumber(game.run_times_rerolled) or 0))
+    out.new_discoveries = game.get_run_discoveries and game:get_run_discoveries() or 0
     out.seed = game.SEED and tostring(game.SEED) or "Unknown"
     return out
 end
@@ -54,31 +67,32 @@ function GameOverUI.draw_top(game)
         love.graphics.rectangle("fill", panel_x, panel_y, panel_w, panel_h, 5, 5)
     end
 
-    love.graphics.setFont(game.FONTS.PIXEL.MEDIUM)
-    love.graphics.setColor(game.C.MULT or game.C.ORANGE)
-    DynaText.draw(GAME_OVER_TITLE_TEXT, "Game Over", panel_x, panel_y + 10, panel_w, "center")
-    love.graphics.setFont(game.FONTS.PIXEL.SMALL)
-    love.graphics.setColor(game.C.GREY)
-    love.graphics.printf("Run Summary", panel_x, panel_y + 29, panel_w, "center")
+    local new_count = #(game._newly_unlocked_jokers or {}) + #(game._newly_unlocked_vouchers or {})
+    TicketStrip.draw(game, {
+        x = panel_x + 8, y = panel_y + 8, w = panel_w - 16, h = 36, stub_w = 72,
+        stub = "ENDED", title = "Game Over",
+        detail = GameOverUI.quip(game)
+            .. (new_count > 0 and string.format("  %d new unlock%s", new_count, new_count == 1 and "" or "s") or ""),
+        stub_color = game.C.MULT or game.C.ORANGE,
+    })
 
-    local label_x, value_x, value_w = panel_x + 20, panel_x + 176, 190
-    local y = panel_y + 59
+    local y = panel_y + 47
     local function row(label, value, colour)
-        love.graphics.setFont(game.FONTS.PIXEL.SMALL)
-        love.graphics.setColor(game.C.GREY)
-        love.graphics.print(label, label_x, y)
-        love.graphics.setColor(colour or game.C.WHITE)
-        love.graphics.printf(tostring(value), value_x, y, value_w, "right")
-        -- Eight rows in the same panel: 22 px pitch keeps the last one clear of the bottom.
-        y = y + 22
+        TicketStrip.draw(game, {
+            x = panel_x + 12, y = y, w = panel_w - 24, h = 20, stub_w = 112,
+            stub = label, title = tostring(value), stub_color = colour or game.C.GREY,
+        })
+        y = y + 19
     end
 
-    row("Best Hand", NumberFormat.format(summary.best_hand_score), game.C.RED)
+    row("Best Hand", NumberFormat.format(summary.best_hand_score)
+        .. (game._run_record_flags and game._run_record_flags.c_best_hand_chips and "  NEW" or ""), game.C.RED)
     row("Most Played Hand", summary.most_played_hand, game.C.WHITE)
     row("Cards Played", summary.cards_played, game.C.BLUE)
     row("Cards Discarded", summary.cards_discarded, game.C.RED)
     row("Cards Purchased", summary.cards_purchased, game.C.MONEY)
     row("Times Rerolled", summary.times_rerolled, game.C.GREEN)
+    row("New Discoveries", summary.new_discoveries, game.C.ORANGE)
     row("Defeated By", summary.defeated_by, game.C.ORANGE)
     row("Seed", summary.seed, game.C.WHITE)
 end
@@ -124,12 +138,11 @@ function GameOverUI.draw_bottom(game)
     love.graphics.printf("You ran out of hands before beating this blind.", panel_x + 8, panel_y + 78, panel_w - 16, "left")
 
     game._game_over_continue_rect = { x = panel_x + panel_w - 84, y = panel_y + panel_h - 26, w = 74, h = 18 }
-    love.graphics.setColor(game.C.ORANGE)
-    love.graphics.rectangle("fill", game._game_over_continue_rect.x, game._game_over_continue_rect.y, game._game_over_continue_rect.w, game._game_over_continue_rect.h, 3, 3)
-    love.graphics.setFont(game.FONTS.PIXEL.SMALL)
-    love.graphics.setColor(game.C.WHITE)
-    local cty = game._game_over_continue_rect.y + math.floor((game._game_over_continue_rect.h - love.graphics.getFont():getHeight()) * 0.5 + 0.5)
-    love.graphics.printf("Continue", game._game_over_continue_rect.x, cty, game._game_over_continue_rect.w, "center")
+    TicketStrip.draw(game, {
+        x = game._game_over_continue_rect.x, y = game._game_over_continue_rect.y,
+        w = game._game_over_continue_rect.w, h = game._game_over_continue_rect.h,
+        stub_w = 24, stub = "A", title = "Continue", stub_color = game.C.ORANGE,
+    })
     love.graphics.pop()
 end
 

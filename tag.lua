@@ -147,6 +147,9 @@ Tag.NEW_BLIND_CHOICE_TYPES = {
 ---@param context string|nil "new_blind_choice" when called from the blind-select screen
 function Tag:Use(context)
     local fired = self:apply(context) and true or false
+    if fired and G and G.begin_tag_activation then
+        G:begin_tag_activation(self)
+    end
     if fired and Sfx and Sfx.play then
         -- Reference `tag.lua:78-79`.
         Sfx.play("generic1", 0.9 + sfx_jitter() * 0.1, 0.8)

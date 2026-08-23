@@ -59,6 +59,7 @@ end
 
 ---@class ShopVoucherNode : Moveable
 ShopVoucherNode = Moveable:extend()
+local Fx = require("fx")
 
 ShopVoucherNode.pop_anchor_topleft = true
 
@@ -103,6 +104,15 @@ function ShopVoucherNode:draw()
                 local dy = y + math.floor((h - dh) * 0.5 + 0.5)
                 love.graphics.setColor(1, 1, 1, 1)
                 love.graphics.draw(atlas.image, quad, dx, dy, 0, s, s)
+                -- The reference gives vouchers a moving sheen (`card.lua:4434-4492`). On
+                -- 3DS only the focused voucher gets the extra mesh pass, keeping a full
+                -- shelf from multiplying vertex work on the Old model.
+                if tonumber(game.active_tooltip_shop_voucher_slot) == tonumber(self.shop_voucher_slot) then
+                    local cols = tonumber(atlas.cols) or 1
+                    local sx = (pos % cols) * px
+                    local sy = math.floor(pos / cols) * py
+                    Fx.draw_shine_cell(atlas.image, sx, sy, px, py, dx, dy, dw, dh, Fx.time())
+                end
                 drew = true
             end
         end

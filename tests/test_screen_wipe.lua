@@ -185,7 +185,8 @@ suite.test("a run started behind the wipe matches the synchronous build", functi
     T.assert_eq(wiped.money, sync.money)
     T.assert_eq(#wiped.deck.cards, #sync.deck.cards)
     T.assert_true(wiped.ASSET_ATLAS.centers.image ~= nil, "centers resident for the first deal")
-    T.assert_true(wiped.ASSET_ATLAS.cards_2.image ~= nil, "cards_2 resident for the first deal")
+    local ranks = wiped:get_playing_card_atlas_name()
+    T.assert_true(wiped.ASSET_ATLAS[ranks].image ~= nil, ranks .. " resident for the first deal")
     T.assert_eq(wiped.ASSET_ATLAS.balatro.image, nil, "and the menu sheets are gone")
 end)
 

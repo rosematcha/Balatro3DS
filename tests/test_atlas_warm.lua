@@ -57,10 +57,11 @@ end)
 
 suite.test("starting a run warms the sheets the first deal needs", function()
     local game = bootstrap.new_game(11)
-    unload_all(game, { "centers", "cards_2" }, {})
+    unload_all(game, { "centers", "cards_1", "cards_2" }, {})
     game:start_run_from_main_menu()
     T.assert_true(game.ASSET_ATLAS.centers.image ~= nil, "centers resident for the deal")
-    T.assert_true(game.ASSET_ATLAS.cards_2.image ~= nil, "cards_2 resident for the deal")
+    local ranks = game:get_playing_card_atlas_name()
+    T.assert_true(game.ASSET_ATLAS[ranks].image ~= nil, ranks .. " resident for the deal")
 end)
 
 return suite

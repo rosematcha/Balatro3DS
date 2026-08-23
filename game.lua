@@ -9,6 +9,7 @@ local BoosterPackUI = require("booster_pack_ui")
 local HandActionsUI = require("hand_actions_ui")
 local MainMenuUI = require("main_menu_ui")
 local DeckViewUI = require("deck_view_ui")
+local RunInfoUI = require("run_info_ui")
 local CollectionUI = require("collection_ui")
 local DynaText = require("dyna_text")
 local CollectionCatalog = require("collection_catalog")
@@ -24,6 +25,10 @@ local NumberFormat = require("number_format")
 local Tilt = require("tilt")
 local ScreenWipe = require("screen_wipe")
 local JokerDisplay = require("joker_display")
+local VoucherUnlocks = require("voucher_unlocks")
+local TutorialUI = require("tutorial_ui")
+local TicketStrip = require("ticket_strip")
+local Milestones = require("milestone_queue")
 
 --- Seconds between revealing each payout line on the round-win screen.
 ---
@@ -142,6 +147,7 @@ function Game:init(seed)
     self.popups = {}
     self.tags = {}
     self.skips = {}
+    self.blinds_skipped = {}
     self.skip_tag_orbital_hand = {}
     self._atlas_owner_counts = {}
     self.dragging = nil
@@ -166,8 +172,7 @@ function Game:init(seed)
     self._pause_save_quit_rect = nil
     self._pause_save_error = nil
     self._deck_view_open = false
-    self._deck_view_hand_panel_open = false
-    self._deck_view_hand_panel_t = 0
+    self._run_info_open = false
     self._pause_settings_rect = nil
     self._pause_show_settings = false
     self._pause_speed_rects = {}
@@ -283,6 +288,7 @@ function Game:init(seed)
     --- (`common_events.lua:859,878`) - noticeably longer than a played card's chip pop,
     --- because a joker firing is the thing the player is actually watching for.
     self.JOKER_EMIT_INTERVAL = 0.9375
+    self.JOKER_EDITION_EMIT_INTERVAL = 0.18
 
     -- Run Consumables (Tarot / Planet cards held outside the deck).
     self.consumables = {}
@@ -425,6 +431,29 @@ function Game:reset_run_stats()
     self.run_cards_discarded = 0
     self.run_cards_purchased = 0
     self.run_times_rerolled = 0
+    self.run_discoveries_start = self.count_discoveries and self:count_discoveries() or 0
+    self._run_record_flags = {}
+    self._run_records_queued = nil
+end
+
+--- Opt out of the port's first-run guidance. This is deliberately a port-only setting: the
+--- reference has no skip route, but a returning player should not have to finish an interrupted
+--- tutorial just to start a normal run.
+function Game:skip_tutorial()
+    if not self.SETTINGS or self.SETTINGS.TUTORIAL_COMPLETE == true then return false end
+    self.SETTINGS.TUTORIAL_COMPLETE = true
+    self.SETTINGS.TUTORIAL_STAGE = nil
+    self._tutorial_shop_seen = nil
+    self._tutorial_voice_step = nil
+    self._tutorial_second_hand_start = nil
+    self._pause_skip_tutorial_rect = nil
+    self:save_settings()
+    return true
+end
+
+function Game:get_run_discoveries()
+    return math.max(0, (self.count_discoveries and self:count_discoveries() or 0)
+        - (tonumber(self.run_discoveries_start) or 0))
 end
 
 --- Highest single-hand score this run.
@@ -433,18 +462,23 @@ function Game:record_hand_score(score)
     if s > (tonumber(self.run_best_hand_score) or 0) then
         self.run_best_hand_score = s
     end
+    self:record_career_best("c_best_hand_chips", s)
 end
 
 function Game:record_cards_played(count)
     local n = math.floor(tonumber(count) or 0)
     if n <= 0 then return end
     self.run_cards_played = (tonumber(self.run_cards_played) or 0) + n
+    self:add_career_stat("c_cards_played", n)
+    self:check_voucher_unlocks()
 end
 
 function Game:record_cards_discarded(count)
     local n = math.floor(tonumber(count) or 0)
     if n <= 0 then return end
     self.run_cards_discarded = (tonumber(self.run_cards_discarded) or 0) + n
+    self:add_career_stat("c_cards_discarded", n)
+    self:check_voucher_unlocks()
 end
 
 function Game:record_card_purchased(count)
@@ -455,6 +489,8 @@ end
 
 function Game:record_shop_reroll()
     self.run_times_rerolled = (tonumber(self.run_times_rerolled) or 0) + 1
+    self:add_career_stat("c_shop_rerolls", 1)
+    self:check_voucher_unlocks()
 end
 
 --- Poker-hand name with the highest play count this run (handlist order breaks ties).
@@ -1661,6 +1697,34 @@ function Game:removeTag(i)
     end
 end
 
+--- Keep the consumed tag visible for one last beat. The reference juices and dissolves the
+--- tag after its effect fires (`reference/Balatro/tag.lua:78-87`); retaining the existing
+--- atlas/quad gives the 3DS the same readable handoff for one extra draw call and no texture,
+--- quad, or particle allocation on the activation frame.
+function Game:begin_tag_activation(tag)
+    if not tag then return end
+    self._tag_activation = {
+        age = 0,
+        duration = 0.48,
+        atlas = tag.atlas,
+        quad = tag.quad,
+        x = tonumber(tag.X) or 0,
+        y = tonumber(tag.Y) or 0,
+    }
+end
+
+function Game:draw_tag_activation()
+    local a = self._tag_activation
+    if not a or not a.atlas or not a.atlas.image or not a.quad then return end
+    local p = math.min(1, a.age / a.duration)
+    local scale = 0.75 + 0.18 * math.sin(p * math.pi)
+    love.graphics.push()
+    love.graphics.setColor(1, 1, 1, 1 - p)
+    love.graphics.draw(a.atlas.image, a.quad, a.x - 3 * p, a.y - 10 * p,
+        -0.12 * p, scale, scale, 0, 0)
+    love.graphics.pop()
+end
+
 function Game:updateTagList()
     local width, height = love.graphics.getDimensions()
 
@@ -2124,6 +2188,10 @@ function Game:discover_item(id)
         self:check_unlock("discover_amount")
         self._discovering_item = nil
     end
+    self:check_voucher_unlocks()
+    if not self._unlock_discovery then
+        Milestones.push(self, "discovery", "New discovery", id)
+    end
     self:save_settings()
     return true
 end
@@ -2132,6 +2200,56 @@ end
 ---@return table<string, boolean>
 function Game:build_joker_unlocks()
     return {}
+end
+
+function Game:build_voucher_unlocks()
+    return {}
+end
+
+function Game:normalize_voucher_unlocks(data)
+    local out = {}
+    if type(data) ~= "table" then return out end
+    for id, unlocked in pairs(data) do
+        if unlocked == true and VoucherUnlocks.condition_for(id) then out[id] = true end
+    end
+    return out
+end
+
+function Game:apply_voucher_unlocks(data)
+    self.voucher_unlocks = self:normalize_voucher_unlocks(data)
+    if self.SETTINGS then self.SETTINGS.VOUCHER_UNLOCKS = self.voucher_unlocks end
+end
+
+function Game:is_voucher_unlocked(id)
+    if not VoucherUnlocks.condition_for(id) then return true end
+    return type(self.voucher_unlocks) == "table" and self.voucher_unlocks[id] == true
+end
+
+--- Evaluate every still-locked tier-two voucher. Unlocks are permanent once earned.
+--- Seeded and challenge runs do not grant collection progression, matching
+--- `check_for_unlock` (`reference/Balatro/functions/common_events.lua:1165-1177`).
+function Game:check_voucher_unlocks(data)
+    if self.seeded == true or self.challenge_id ~= nil then return {} end
+    self.voucher_unlocks = self.voucher_unlocks or {}
+    local earned = {}
+    for id in pairs(VoucherUnlocks.CONDITIONS) do
+        if self.voucher_unlocks[id] ~= true and VoucherUnlocks.is_met(self, id, data) then
+            self.voucher_unlocks[id] = true
+            earned[#earned + 1] = id
+        end
+    end
+    if #earned > 0 then
+        table.sort(earned)
+        self._newly_unlocked_vouchers = self._newly_unlocked_vouchers or {}
+        for _, id in ipairs(earned) do
+            self._newly_unlocked_vouchers[#self._newly_unlocked_vouchers + 1] = id
+            local def = VOUCHER_DEFS and VOUCHER_DEFS[id]
+            Milestones.push(self, "voucher", "Voucher unlocked", (def and def.name) or id)
+        end
+        if self.SETTINGS then self.SETTINGS.VOUCHER_UNLOCKS = self.voucher_unlocks end
+        self:save_settings()
+    end
+    return earned
 end
 
 ---@return table<string, number>
@@ -2238,8 +2356,28 @@ function Game:record_career_best(name, value)
     local v = tonumber(value) or 0
     if v > (tonumber(self.career_stats[name]) or 0) then
         self.career_stats[name] = v
+        self._run_record_flags = self._run_record_flags or {}
+        self._run_record_flags[name] = true
         if self.SETTINGS then self.SETTINGS.CAREER_STATS = self.career_stats end
+        return true
     end
+    return false
+end
+
+function Game:queue_run_record_milestones()
+    if self._run_records_queued then return end
+    self._run_records_queued = true
+    local labels = {
+        c_best_hand_chips = "Best hand", c_furthest_round = "Highest round",
+        c_furthest_ante = "Highest ante", c_most_money = "Most money",
+        c_win_streak = "Win streak",
+    }
+    local names = {}
+    for name, raised in pairs(self._run_record_flags or {}) do
+        if raised and labels[name] then names[#names + 1] = name end
+    end
+    table.sort(names)
+    for _, name in ipairs(names) do Milestones.push(self, "record", "New record", labels[name]) end
 end
 
 ---@return integer how many consumables of `kind` have been discovered
@@ -2269,15 +2407,19 @@ function Game:check_unlock(event_type, data)
     if #earned == 0 then return earned end
 
     if type(self.joker_unlocks) ~= "table" then self.joker_unlocks = {} end
+    self._unlock_discovery = true
     for _, id in ipairs(earned) do
         self.joker_unlocks[id] = true
         -- An unlocked Joker is also a discovered one, so it stops reading as a silhouette.
         self:discover_item(id)
     end
+    self._unlock_discovery = nil
     if self.SETTINGS then self.SETTINGS.JOKER_UNLOCKS = self.joker_unlocks end
     self._newly_unlocked_jokers = self._newly_unlocked_jokers or {}
     for _, id in ipairs(earned) do
         self._newly_unlocked_jokers[#self._newly_unlocked_jokers + 1] = id
+        local def = JOKER_DEFS and JOKER_DEFS[id]
+        Milestones.push(self, "joker", "Joker unlocked", (def and def.name) or id)
     end
     self:save_settings()
     return earned
@@ -2331,6 +2473,7 @@ function Game:ensure_victory_progress_recorded()
     self:check_unlock("win", { rounds = tonumber(self.round) or 0 })
     self:check_unlock("win_no_hand")
     self:check_unlock("win_custom")
+    self:queue_run_record_milestones()
     self._victory_progress_recorded = true
     return true
 end
@@ -2338,7 +2481,10 @@ end
 function Game:record_challenge_victory(challenge_id)
     if type(challenge_id) ~= "string" or challenge_id == "" or type(self.SETTINGS) ~= "table" then return false end
     if type(self.SETTINGS.CHALLENGE_WINS) ~= "table" then self.SETTINGS.CHALLENGE_WINS = {} end
+    local was_complete = self.SETTINGS.CHALLENGE_WINS[challenge_id] == true
     self.SETTINGS.CHALLENGE_WINS[challenge_id] = true
+    self:refresh_challenge_unlocks()
+    if not was_complete then Milestones.push(self, "challenge", "Challenge complete", challenge_id) end
     self:save_settings()
     return true
 end
@@ -2346,6 +2492,46 @@ end
 function Game:is_challenge_completed(challenge_id)
     return type(challenge_id) == "string" and self.SETTINGS and type(self.SETTINGS.CHALLENGE_WINS) == "table"
         and self.SETTINGS.CHALLENGE_WINS[challenge_id] == true
+end
+
+function Game:get_challenges_unlocked_count()
+    return math.max(0, math.min(#(CHALLENGE_DEFS or {}),
+        math.floor(tonumber(self.SETTINGS and self.SETTINGS.CHALLENGES_UNLOCKED) or 0)))
+end
+
+function Game:is_challenge_unlocked(challenge_id)
+    for index, def in ipairs(CHALLENGE_DEFS or {}) do
+        if def.id == challenge_id then return index <= self:get_challenges_unlocked_count() end
+    end
+    return false
+end
+
+--- Challenges appear after White Stake wins with five distinct decks. Thereafter the
+--- profile exposes five more than it has completed, capped at twenty
+--- (`reference/Balatro/functions/common_events.lua`, `set_challenge_unlock`).
+function Game:refresh_challenge_unlocks()
+    if type(self.SETTINGS) ~= "table" then return 0 end
+    local total = #(CHALLENGE_DEFS or {})
+    local completed = 0
+    for _, def in ipairs(CHALLENGE_DEFS or {}) do
+        if self:is_challenge_completed(def.id) then completed = completed + 1 end
+    end
+    local current = self:get_challenges_unlocked_count()
+    local distinct_white_wins = 0
+    for _, deck in ipairs(DECK_SELECT_DEFS or DECK_DEFS or {}) do
+        if deck.id ~= "b_challenge" and self:is_stake_defeated(deck.id, "stake_white") then
+            distinct_white_wins = distinct_white_wins + 1
+        end
+    end
+    local target = current
+    if current > 0 or completed > 0 then
+        target = math.min(total, completed + 5)
+    elseif distinct_white_wins >= 5 then
+        target = math.min(total, 5)
+    end
+    target = math.max(current, target)
+    self.SETTINGS.CHALLENGES_UNLOCKED = target
+    return target
 end
 
 function Game:get_win_count()
@@ -2369,7 +2555,10 @@ function Game:record_stake_victory()
     local deck = self.unlocks[deck_id]
     local stake = deck and deck.stakes and deck.stakes[stake_id]
     if not stake then return false end
-    if stake.defeated == true then return true end
+    if stake.defeated == true then
+        self:refresh_challenge_unlocks()
+        return true
+    end
 
     stake.defeated = true
     local unlock_next = false
@@ -2407,6 +2596,7 @@ function Game:record_stake_victory()
     end
 
     self:apply_unlocks(self.unlocks)
+    self:refresh_challenge_unlocks()
     self:save_settings()
     return true
 end
@@ -2527,9 +2717,8 @@ end
 
 function Game:enter_pause_menu()
     if not self:can_pause_now() then return false end
-    if self._deck_view_open then
-        self:exit_deck_view()
-    end
+    self:exit_deck_view()
+    self:exit_run_info()
     if self.STATE ~= self.STATES.PAUSED then
         self._pause_prev_state = self.STATE
     end
@@ -2565,6 +2754,7 @@ function Game:enter_pause_menu()
     self._pause_reduced_motion_rect = nil
     self._pause_tilt_rect = nil
     self._pause_joker_display_rect = nil
+    self._pause_skip_tutorial_rect = nil
     self._pause_focus_index = 1
     self:set_state(self.STATES.PAUSED)
     return true
@@ -2688,8 +2878,31 @@ function Game:build_pause_focus_targets()
             end
             return targets
         end
+        if self._pause_settings_tab == "audio" then
+            -- Left/right steps the focused slider's value instead of moving focus
+            -- (`handle_gamepad_pause`), so the pad reaches them like a touch drag would.
+            if self._pause_master_slider_rect then
+                targets[#targets + 1] = { kind = "master_volume", rect = self._pause_master_slider_rect }
+            end
+            if self._pause_music_slider_rect then
+                targets[#targets + 1] = { kind = "music_volume", rect = self._pause_music_slider_rect }
+            end
+            if self._pause_sfx_slider_rect then
+                targets[#targets + 1] = { kind = "sfx_volume", rect = self._pause_sfx_slider_rect }
+            end
+            if self._pause_screenshake_slider_rect then
+                targets[#targets + 1] = { kind = "screenshake", rect = self._pause_screenshake_slider_rect }
+            end
+            if self._pause_back_rect then
+                targets[#targets + 1] = { kind = "back", rect = self._pause_back_rect }
+            end
+            return targets
+        end
         for i, r in ipairs(self._pause_speed_rects or {}) do
             if r then targets[#targets + 1] = { kind = "speed", index = i, rect = r } end
+        end
+        if self._pause_audio_open_rect then
+            targets[#targets + 1] = { kind = "audio_open", rect = self._pause_audio_open_rect }
         end
         if self._pause_controls_open_rect then
             targets[#targets + 1] = { kind = "controls_open", rect = self._pause_controls_open_rect }
@@ -2697,8 +2910,6 @@ function Game:build_pause_focus_targets()
         if self._pause_performance_open_rect then
             targets[#targets + 1] = { kind = "performance_open", rect = self._pause_performance_open_rect }
         end
-        -- The volume sliders stay touch-only, as they always have been; the toggles are buttons, so
-        -- the pad reaches them like any other.
         if self._pause_reduced_motion_rect then
             targets[#targets + 1] = { kind = "reduced_motion", rect = self._pause_reduced_motion_rect }
         end
@@ -2707,6 +2918,12 @@ function Game:build_pause_focus_targets()
         end
         if self._pause_joker_display_rect then
             targets[#targets + 1] = { kind = "joker_display", rect = self._pause_joker_display_rect }
+        end
+        if self._pause_high_contrast_rect then
+            targets[#targets + 1] = { kind = "high_contrast", rect = self._pause_high_contrast_rect }
+        end
+        if self._pause_skip_tutorial_rect then
+            targets[#targets + 1] = { kind = "skip_tutorial", rect = self._pause_skip_tutorial_rect }
         end
         if self._pause_back_rect then
             targets[#targets + 1] = { kind = "back", rect = self._pause_back_rect }
@@ -2756,6 +2973,10 @@ function Game:activate_pause_focus()
         self._controls_listen_role = nil
         self._pause_focus_index = 1
         return true
+    elseif t.kind == "audio_open" then
+        self._pause_settings_tab = "audio"
+        self._pause_focus_index = 1
+        return true
     elseif t.kind == "controls_open" then
         self:end_pause_slider_drag()
         self._pause_settings_tab = "controls"
@@ -2774,6 +2995,11 @@ function Game:activate_pause_focus()
     elseif t.kind == "joker_display" then
         self:set_joker_display_enabled(not self:joker_display_enabled())
         return true
+    elseif t.kind == "high_contrast" then
+        self:set_high_contrast_cards(not self:high_contrast_cards_enabled())
+        return true
+    elseif t.kind == "skip_tutorial" then
+        return self:skip_tutorial()
     elseif t.kind == "perf_toggle" and t.rect and t.rect.experiment_id then
         PerformanceLab.toggle(t.rect.experiment_id)
         RenderProfiler.reset()
@@ -2811,6 +3037,10 @@ function Game:activate_pause_focus()
             self:reset_controls_grid_focus()
             self._pause_focus_index = 1
         elseif self._pause_settings_tab == "performance" then
+            self._pause_settings_tab = "general"
+            self._pause_focus_index = 1
+        elseif self._pause_settings_tab == "audio" then
+            self:end_pause_slider_drag()
             self._pause_settings_tab = "general"
             self._pause_focus_index = 1
         else
@@ -2863,6 +3093,13 @@ function Game:handle_gamepad_pause(button)
         self._pause_focus_index = 1
         return true
     end
+    if self._pause_show_settings and self._pause_settings_tab == "audio"
+        and self:is_role(button, "cancel") then
+        self:end_pause_slider_drag()
+        self._pause_settings_tab = "general"
+        self._pause_focus_index = 1
+        return true
+    end
     if button == "up" or button == "dpup" then
         self:pause_gamepad_move(-1)
         return true
@@ -2872,10 +3109,12 @@ function Game:handle_gamepad_pause(button)
         return true
     end
     if (button == "left" or button == "dpleft") and self._pause_show_settings then
+        if self:adjust_pause_focus_slider(-1) then return true end
         self:pause_gamepad_move(-1)
         return true
     end
     if (button == "right" or button == "dpright") and self._pause_show_settings then
+        if self:adjust_pause_focus_slider(1) then return true end
         self:pause_gamepad_move(1)
         return true
     end
@@ -3058,6 +3297,7 @@ function Game:delete_profile_progress()
     self.Discovered = self:build_discovered()
     self.joker_wins = self:build_joker_wins()
     self.joker_unlocks = self:build_joker_unlocks()
+    self.voucher_unlocks = self:build_voucher_unlocks()
     self.career_stats = self:build_career_stats()
     self.career_hand_usage = {}
     if self.SETTINGS then
@@ -3066,7 +3306,10 @@ function Game:delete_profile_progress()
         self.SETTINGS.DISCOVERED = self.Discovered
         self.SETTINGS.JOKER_WINS = self.joker_wins
         self.SETTINGS.JOKER_UNLOCKS = self.joker_unlocks
+        self.SETTINGS.VOUCHER_UNLOCKS = self.voucher_unlocks
         self.SETTINGS.CAREER_STATS = self.career_stats
+        self.SETTINGS.CHALLENGE_WINS = {}
+        self.SETTINGS.CHALLENGES_UNLOCKED = 0
         self.SETTINGS.WINS = 0
     end
     self:apply_unlocks(self.unlocks)
@@ -3260,15 +3503,20 @@ function Game:default_settings()
         -- it is an information overlay the base game does not have, and it costs the 20 px
         -- under the row.
         JOKER_DISPLAY = false,
+        HIGH_CONTRAST_CARDS = false,
+        TUTORIAL_COMPLETE = false,
+        TUTORIAL_STAGE = 1,
         GRAPHICS = { texture_scaling = 1 },
         CONTROLS = InputBindings.default_settings(),
         UNLOCKS = self:build_unlocks(),
         JOKER_UNLOCKS = self:build_joker_unlocks(),
+        VOUCHER_UNLOCKS = self:build_voucher_unlocks(),
         CAREER_STATS = self:build_career_stats(),
         CAREER_HAND_USAGE = {},
         DISCOVERED = self:build_discovered(),
         JOKER_WINS = self:build_joker_wins(),
         CHALLENGE_WINS = {},
+        CHALLENGES_UNLOCKED = 0,
         WINS = 0,
     }
 end
@@ -3313,15 +3561,28 @@ function Game:normalize_settings(data)
     if type(data.JOKER_DISPLAY) == "boolean" then
         out.JOKER_DISPLAY = data.JOKER_DISPLAY
     end
+    if type(data.HIGH_CONTRAST_CARDS) == "boolean" then
+        out.HIGH_CONTRAST_CARDS = data.HIGH_CONTRAST_CARDS
+    end
+    if type(data.TUTORIAL_COMPLETE) == "boolean" then
+        out.TUTORIAL_COMPLETE = data.TUTORIAL_COMPLETE
+    elseif math.max(0, math.floor(tonumber(data.WINS) or 0)) > 0
+        or (type(data.DISCOVERED) == "table" and next(data.DISCOVERED) ~= nil) then
+        out.TUTORIAL_COMPLETE = true
+    end
+    out.TUTORIAL_STAGE = math.max(1, math.min(5, math.floor(tonumber(data.TUTORIAL_STAGE) or 1)))
 
     out.CONTROLS = InputBindings.normalize_controls(data.CONTROLS)
     out.UNLOCKS = self:normalize_unlocks(data.UNLOCKS)
     out.JOKER_UNLOCKS = self:normalize_joker_unlocks(data.JOKER_UNLOCKS)
+    out.VOUCHER_UNLOCKS = self:normalize_voucher_unlocks(data.VOUCHER_UNLOCKS)
     out.CAREER_STATS = self:normalize_career_stats(data.CAREER_STATS)
     out.CAREER_HAND_USAGE = self:normalize_career_hand_usage(data.CAREER_HAND_USAGE)
     out.DISCOVERED = self:normalize_discovered(data.DISCOVERED)
     out.JOKER_WINS = self:normalize_joker_wins(data.JOKER_WINS)
     out.CHALLENGE_WINS = type(data.CHALLENGE_WINS) == "table" and copy_table(data.CHALLENGE_WINS) or {}
+    out.CHALLENGES_UNLOCKED = math.max(0, math.min(#(CHALLENGE_DEFS or {}),
+        math.floor(tonumber(data.CHALLENGES_UNLOCKED) or 0)))
     out.WINS = math.max(0, math.floor(tonumber(data.WINS) or 0))
 
     return out
@@ -3342,10 +3603,15 @@ function Game:snapshot_settings()
         REDUCED_MOTION = self:reduced_motion_enabled(),
         TILT = self:tilt_enabled(),
         JOKER_DISPLAY = self:joker_display_enabled(),
+        HIGH_CONTRAST_CARDS = self:high_contrast_cards_enabled(),
+        TUTORIAL_COMPLETE = self.SETTINGS and self.SETTINGS.TUTORIAL_COMPLETE == true,
+        TUTORIAL_STAGE = self.SETTINGS and self.SETTINGS.TUTORIAL_STAGE or 1,
         CONTROLS = InputBindings.normalize_controls(self.SETTINGS and self.SETTINGS.CONTROLS),
         UNLOCKS = self:normalize_unlocks(self.unlocks or (self.SETTINGS and self.SETTINGS.UNLOCKS)),
         JOKER_UNLOCKS = self:normalize_joker_unlocks(self.joker_unlocks
             or (self.SETTINGS and self.SETTINGS.JOKER_UNLOCKS)),
+        VOUCHER_UNLOCKS = self:normalize_voucher_unlocks(self.voucher_unlocks
+            or (self.SETTINGS and self.SETTINGS.VOUCHER_UNLOCKS)),
         CAREER_STATS = self:normalize_career_stats(self.career_stats
             or (self.SETTINGS and self.SETTINGS.CAREER_STATS)),
         CAREER_HAND_USAGE = self:normalize_career_hand_usage(self.career_hand_usage
@@ -3353,6 +3619,7 @@ function Game:snapshot_settings()
         DISCOVERED = self:normalize_discovered(self.Discovered or (self.SETTINGS and self.SETTINGS.DISCOVERED)),
         JOKER_WINS = self:normalize_joker_wins(self:get_joker_wins_for_save()),
         CHALLENGE_WINS = copy_table(self.SETTINGS and self.SETTINGS.CHALLENGE_WINS or {}),
+        CHALLENGES_UNLOCKED = self:get_challenges_unlocked_count(),
         WINS = self:get_win_count(),
     }
 end
@@ -3364,8 +3631,10 @@ function Game:load_settings()
         self:apply_discovered(self.SETTINGS.DISCOVERED)
         self:apply_joker_wins(self.SETTINGS.JOKER_WINS)
         self:apply_joker_unlocks(self.SETTINGS.JOKER_UNLOCKS)
+        self:apply_voucher_unlocks(self.SETTINGS.VOUCHER_UNLOCKS)
         self:apply_career_stats(self.SETTINGS.CAREER_STATS)
         self:apply_career_hand_usage(self.SETTINGS.CAREER_HAND_USAGE)
+        self:refresh_challenge_unlocks()
         InputBindings.apply_to_game(self)
         if self.apply_music_volume then
             self:apply_music_volume()
@@ -3504,10 +3773,20 @@ function Game:set_game_speed(speed)
     self:save_settings()
 end
 
---- Master volume. No slider yet; it scales both music and SFX.
+--- Master volume scales both music and SFX.
 function Game:get_master_volume()
     local sound = self.SETTINGS and self.SETTINGS.SOUND
     return math.max(0, math.min(100, math.floor(tonumber(sound and sound.volume) or 100)))
+end
+
+---@param pct number volume 0–100
+---@param opts table|nil `{ skip_save = true }` to avoid SD writes while dragging
+function Game:set_master_volume(pct, opts)
+    if not self.SETTINGS then return end
+    if type(self.SETTINGS.SOUND) ~= "table" then self.SETTINGS.SOUND = {} end
+    self.SETTINGS.SOUND.volume = math.max(0, math.min(100, math.floor(tonumber(pct) or 0)))
+    self:apply_music_volume()
+    if not (opts and opts.skip_save) then self:save_settings() end
 end
 
 function Game:get_music_volume()
@@ -3595,6 +3874,30 @@ function Game:set_joker_display_enabled(enabled)
     self:save_settings()
 end
 
+function Game:high_contrast_cards_enabled()
+    return (self.SETTINGS and self.SETTINGS.HIGH_CONTRAST_CARDS) == true
+end
+
+function Game:get_playing_card_atlas_name()
+    return self:high_contrast_cards_enabled() and "cards_2" or "cards_1"
+end
+
+function Game:set_high_contrast_cards(enabled)
+    if not self.SETTINGS then return end
+    self.SETTINGS.HIGH_CONTRAST_CARDS = enabled == true
+    local atlas_name = self:get_playing_card_atlas_name()
+    self:ensure_asset_atlas_loaded(atlas_name)
+    -- Cards registered with an explicit atlas are previews or special-purpose nodes and
+    -- must retain that choice. All ordinary live cards switch in place.
+    for _, card in ipairs((G and G.I and G.I.CARD) or {}) do
+        if card and not card._rank_atlas_explicit then
+            card.rank_atlas_name = atlas_name
+            if card.refresh_quads then card:refresh_quads() end
+        end
+    end
+    self:save_settings()
+end
+
 --- Power the accelerometer to match the current settings. Idempotent; safe to call whenever
 --- anything that feeds into it changes.
 ---@return boolean active
@@ -3623,6 +3926,10 @@ function Game:_music_volume_from_slider_x(x)
     return self:_volume_from_slider_x(self._pause_music_slider_rect, x)
 end
 
+function Game:_master_volume_from_slider_x(x)
+    return self:_volume_from_slider_x(self._pause_master_slider_rect, x)
+end
+
 function Game:_sfx_volume_from_slider_x(x)
     return self:_volume_from_slider_x(self._pause_sfx_slider_rect, x)
 end
@@ -3631,18 +3938,47 @@ function Game:_screenshake_from_slider_x(x)
     return self:_volume_from_slider_x(self._pause_screenshake_slider_rect, x)
 end
 
+--- Left/right on a focused volume slider, for the pad and the no-touchscreen case. Each press
+--- is a discrete step and saves immediately, unlike a touch drag, which defers the SD write
+--- until release (`end_pause_slider_drag`).
+---@param delta number -1 or 1
+function Game:adjust_pause_focus_slider(delta)
+    local targets = self:build_pause_focus_targets()
+    local idx = math.max(1, math.min(#targets, tonumber(self._pause_focus_index) or 1))
+    local t = targets[idx]
+    if not t then return false end
+    delta = (tonumber(delta) or 0) > 0 and 1 or -1
+    local step = 5 * delta
+    if t.kind == "master_volume" then
+        self:set_master_volume(self:get_master_volume() + step)
+        return true
+    elseif t.kind == "music_volume" then
+        self:set_music_volume(self:get_music_volume() + step)
+        return true
+    elseif t.kind == "sfx_volume" then
+        self:set_sfx_volume(self:get_sfx_volume() + step)
+        return true
+    elseif t.kind == "screenshake" then
+        self:set_screenshake_percent(self:get_screenshake_percent() + step)
+        return true
+    end
+    return false
+end
+
 
 --- Leave the general settings tab: flush the deferred slider save and drop the rects,
 --- so a touchrelease lost to a HOME-menu suspend cannot keep dragging against stale
 --- coordinates on another screen.
 function Game:end_pause_slider_drag()
-    if self._pause_music_slider_drag or self._pause_sfx_slider_drag
+    if self._pause_master_slider_drag or self._pause_music_slider_drag or self._pause_sfx_slider_drag
         or self._pause_screenshake_slider_drag then
         self:save_settings()
     end
+    self._pause_master_slider_drag = false
     self._pause_music_slider_drag = false
     self._pause_sfx_slider_drag = false
     self._pause_screenshake_slider_drag = false
+    self._pause_master_slider_rect = nil
     self._pause_music_slider_rect = nil
     self._pause_sfx_slider_rect = nil
     self._pause_screenshake_slider_rect = nil
@@ -3709,6 +4045,17 @@ function Game:toggle_pause()
     return self:enter_pause_menu()
 end
 
+--- Is a full-screen modal overlay up?
+---
+--- Deck Info and Run Info are separate flags because they are separate screens, but every
+--- guard in this file cares only that *some* modal owns the bottom screen. Ask through here
+--- rather than testing a flag: Run Info shipped by testing `_deck_view_open` at six sites and
+--- forgetting the seventh, which left the pause menu drawable but untouchable.
+---@return boolean
+function Game:modal_overlay_open()
+    return self._deck_view_open == true or self._run_info_open == true
+end
+
 function Game:can_open_deck_view()
     if self._deck_view_open then return true end
     if self.STATE == self.STATES.MENU or self.STATE == self.STATES.GAME_OVER or self.STATE == self.STATES.YOU_WIN then return false end
@@ -3725,11 +4072,10 @@ end
 
 function Game:enter_deck_view()
     if self._deck_view_open or not self:can_open_deck_view() then return false end
+    -- One overlay at a time: both are modal and both own the touch screen.
+    self:exit_run_info()
     self.dragging = nil
     self.active_tooltip_card = nil
-    self._deck_view_hand_panel_open = false
-    self._deck_view_hand_panel_t = 0
-    self._deck_view_run_info = false
     self._deck_view_open = true
     DeckViewUI.build(self)
     return true
@@ -3739,9 +4085,6 @@ function Game:exit_deck_view()
     if not self._deck_view_open then return false end
     self.dragging = nil
     self.active_tooltip_card = nil
-    self._deck_view_hand_panel_open = false
-    self._deck_view_hand_panel_t = 0
-    self._deck_view_run_info = false
     DeckViewUI.destroy(self)
     self._deck_view_open = false
     return true
@@ -3754,20 +4097,33 @@ function Game:toggle_deck_view()
     return self:enter_deck_view()
 end
 
---- The first Run Info tab in the reference is Poker Hands (`UI_definitions.lua:3129-3149`).
---- The port already presents those same live hand levels in DeckViewUI's top-screen panel, so
---- ZL opens that panel directly instead of maintaining a second copy of the data-heavy view.
-function Game:toggle_run_info()
-    if self._deck_view_open then
-        self._deck_view_run_info = not self._deck_view_run_info
-        self._deck_view_hand_panel_open = self._deck_view_run_info
-        return true
-    end
-    if not self:enter_deck_view() then return false end
-    self._deck_view_run_info = true
-    self._deck_view_hand_panel_open = true
-    self._deck_view_hand_panel_t = 1
+--- Run Info is its own overlay, not a panel over the deck view.
+---
+--- It used to be the latter: ZL reopened the deck screen with a hand-level panel slid across
+--- it, which meant building 52 Card nodes to look at a list of nine numbers, and left the
+--- reference's Blinds tab with nowhere to live. `run_info_ui.lua` draws both its screens
+--- itself and builds nothing.
+function Game:enter_run_info()
+    if self._run_info_open or not self:can_open_deck_view() then return false end
+    self:exit_deck_view()
+    self.dragging = nil
+    self.active_tooltip_card = nil
+    self._run_info_open = true
     return true
+end
+
+function Game:exit_run_info()
+    if not self._run_info_open then return false end
+    self._run_info_open = false
+    self._run_info_back_rect = nil
+    return true
+end
+
+function Game:toggle_run_info()
+    if self._run_info_open then
+        return self:exit_run_info()
+    end
+    return self:enter_run_info()
 end
 
 function Game:current_resume_state()
@@ -3957,6 +4313,7 @@ function Game:build_run_snapshot()
         joker_pool_replacements = copy_table(self.joker_pool_replacements or {}),
         gros_michel_extinct = self:is_joker_pool_swap_active("j_gros_michel", "j_cavendish"),
         skips = self.skips,
+        blinds_skipped = copy_table(self.blinds_skipped or {}),
         skip_tag_orbital_hand = copy_table(self.skip_tag_orbital_hand or {}),
         handsPlayed = self.handsPlayed,
         discardsUnused = self.discardsUnused,
@@ -3967,7 +4324,12 @@ function Game:build_run_snapshot()
         run_cards_discarded = tonumber(self.run_cards_discarded) or 0,
         run_cards_purchased = tonumber(self.run_cards_purchased) or 0,
         run_times_rerolled = tonumber(self.run_times_rerolled) or 0,
+        run_discoveries_start = tonumber(self.run_discoveries_start) or 0,
+        run_record_flags = copy_table(self._run_record_flags or {}),
         _endless_mode = self._endless_mode == true,
+        -- Ante 8 pauses on YOU_WIN before ROUND_EVAL. Persist its deferred payout so a
+        -- resumed win can still enter Endless and see Cash Out in the correct order.
+        round_win_display_lines = copy_table(self._round_win_display_lines or {}),
     }
 end
 
@@ -4146,6 +4508,7 @@ function Game:load_run_snapshot(snapshot)
         self.joker_pool_replacements.j_gros_michel = "j_cavendish"
     end
     self.skips = snapshot.skips
+    self.blinds_skipped = copy_table(snapshot.blinds_skipped or {})
     self.skip_tag_orbital_hand = copy_table(snapshot.skip_tag_orbital_hand or {})
     self.handsPlayed = snapshot.handsPlayed
     self.discardsUnused = snapshot.discardsUnused
@@ -4156,7 +4519,13 @@ function Game:load_run_snapshot(snapshot)
     self.run_cards_discarded = tonumber(snapshot.run_cards_discarded) or 0
     self.run_cards_purchased = tonumber(snapshot.run_cards_purchased) or 0
     self.run_times_rerolled = tonumber(snapshot.run_times_rerolled) or 0
+    self.run_discoveries_start = tonumber(snapshot.run_discoveries_start) or self:count_discoveries()
+    self._run_record_flags = copy_table(snapshot.run_record_flags or {})
     self._endless_mode = snapshot._endless_mode == true
+    self._round_win_display_lines = copy_table(snapshot.round_win_display_lines or {})
+    self._round_win_lines_revealed = 0
+    self._round_win_line_timer = 0
+    self._round_win_row_tick = nil
     self.joker_shared_picks = copy_table(snapshot.joker_shared_picks or {})
 
     for _, jrec in ipairs(snapshot.jokers or {}) do
@@ -4952,6 +5321,8 @@ function Game:draw()
 
     if self._deck_view_open then
         DeckViewUI.draw_bottom(self)
+    elseif self._run_info_open then
+        RunInfoUI.draw_bottom(self)
     end
 
     if self.STATE == self.STATES.MENU and self._menu_sub_state == "collection_grid" then
@@ -5112,7 +5483,7 @@ function Game:draw_tooltips_on_top()
             end
         end
     end
-    if self.hand and self.hand.card_nodes and not self._deck_view_open then
+    if self.hand and self.hand.card_nodes and not self:modal_overlay_open() then
         for _, hn in ipairs(self.hand.card_nodes) do
             if hn and hn.draw_tooltip_overlay then
                 hn:draw_tooltip_overlay()
@@ -6304,6 +6675,14 @@ function Game:track_consumable_use(c)
     if c.kind == "tarot" then
         self.tarots_used = (tonumber(self.tarots_used) or 0) + 1
     end
+    if self.STATE == self.STATES.OPEN_BOOSTER then
+        if c.kind == "tarot" then
+            self:add_career_stat("c_tarot_reading_used", 1)
+        elseif c.kind == "planet" then
+            self:add_career_stat("c_planetarium_used", 1)
+        end
+        self:check_voucher_unlocks()
+    end
     if type(c.id) == "string" and c.id ~= "" then
         -- Reference records usage by center key, preserving one entry across repeats
         -- (`reference/Balatro/functions/misc_functions.lua:1191-1203`).
@@ -6648,6 +7027,8 @@ function Game:skip_blind(index)
             self:addTag(tag_type)
         end
     end
+    if type(self.blinds_skipped) ~= "table" then self.blinds_skipped = {} end
+    self.blinds_skipped[blind_index] = true
     self.current_blind_index = math.min(3, blind_index + 1)
     self.selected_blind_index = self.current_blind_index
     -- Skipping announces itself (`button_callbacks.lua:2763`), on top of whatever the tag
@@ -6942,6 +7323,13 @@ end
 
 function Game:draw_bottom_shop()
     ShopUI.draw_bottom_shop(self)
+    local callout = self._voucher_callout
+    if callout then
+        local rise = math.floor(math.max(0, 1 - callout.t / callout.duration) * 8)
+        TicketStrip.draw(self, { x = 34, y = 8 - rise, w = 252, h = 34, stub_w = 64,
+            stub = "REDEEMED", title = callout.name, detail = "Voucher added to this run",
+            stub_color = self.C.GOLD or self.C.MONEY })
+    end
 end
 
 function Game:_draw_blind_info_tooltip()
@@ -7060,15 +7448,10 @@ function Game:draw_bottom_pause()
     local panel_y = 26
     local panel_h = 188
     if self._pause_show_settings then
-        local tab = self._pause_settings_tab
-        if tab == "controls" or tab == "performance" or tab == "motion" or tab == "tilt" then
-            panel_y = 4
-            panel_h = BOTTOM_H - panel_y - 4
-        else
-            -- Taller than the pause page: two volume sliders plus the speed row.
-            panel_y = 12
-            panel_h = 224
-        end
+        -- Every settings tab now fits the same taller panel: splitting audio out of the general
+        -- tab freed the room the old two-sliders-plus-speed-row layout needed.
+        panel_y = 4
+        panel_h = BOTTOM_H - panel_y - 4
     end
     if _G.draw_rect_with_shadow then
         draw_rect_with_shadow(panel_x, panel_y, panel_w, panel_h, 6, 3, self.C.BLOCK.BACK, self.C.BLOCK.SHADOW, 3)
@@ -7140,6 +7523,38 @@ function Game:draw_bottom_pause()
             end
         end
         return false
+    end
+
+    local slider_track_x = panel_x + 36
+    local slider_track_w = panel_w - 72
+    local slider_knob_r = 7
+    local function draw_volume_slider(label, label_y, track_y, vol, focused)
+        love.graphics.setColor(self.C.GREY)
+        love.graphics.setFont(self.FONTS.PIXEL.SMALL)
+        love.graphics.printf(string.format("%s (%d)", label, math.floor(vol + 0.5)),
+            panel_x, label_y, panel_w, "center")
+        local knob_x = slider_track_x + (vol / 100) * slider_track_w
+        local prev_lw = love.graphics.getLineWidth()
+        love.graphics.setColor(self.C.GREY)
+        love.graphics.setLineWidth(2)
+        love.graphics.line(slider_track_x, track_y, slider_track_x + slider_track_w, track_y)
+        love.graphics.setColor(focused and (self.C.MONEY or self.C.ORANGE) or self.C.WHITE)
+        love.graphics.circle("fill", knob_x, track_y, focused and (slider_knob_r + 2) or slider_knob_r)
+        if focused then
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.setLineWidth(2)
+            love.graphics.circle("line", knob_x, track_y, slider_knob_r + 2)
+        end
+        love.graphics.setLineWidth(prev_lw)
+        return {
+            x = slider_track_x - slider_knob_r,
+            y = track_y - 12,
+            w = slider_track_w + slider_knob_r * 2,
+            h = 24,
+            track_x = slider_track_x,
+            track_w = slider_track_w,
+            track_y = track_y,
+        }
     end
 
     if self._pause_show_settings then
@@ -7302,8 +7717,33 @@ function Game:draw_bottom_pause()
             draw_btn(self._perf_reset_rect, "Reset", self.C.BOOSTER, is_pause_focused("perf_reset"))
             draw_btn(self._perf_disable_rect, "All Off", self.C.RED, is_pause_focused("perf_disable"))
             draw_btn(self._pause_back_rect, "Back", self.C.MULT, is_pause_focused("back"))
+        elseif self._pause_settings_tab == "audio" then
+            -- ===== SETTINGS AUDIO TAB =====
+            love.graphics.printf("Audio", panel_x, panel_y + 10, panel_w, "center")
+
+            self._pause_master_slider_rect =
+                draw_volume_slider("Master Volume", panel_y + 36, panel_y + 52, self:get_master_volume(),
+                    is_pause_focused("master_volume"))
+            self._pause_music_slider_rect =
+                draw_volume_slider("Music Volume", panel_y + 68, panel_y + 84, self:get_music_volume(),
+                    is_pause_focused("music_volume"))
+            self._pause_sfx_slider_rect =
+                draw_volume_slider("SFX Volume", panel_y + 100, panel_y + 116, self:get_sfx_volume(),
+                    is_pause_focused("sfx_volume"))
+            -- Reference `UI_definitions.lua:2305`: screenshake is a 0-100 slider, alongside
+            -- the volumes, not a hidden constant.
+            self._pause_screenshake_slider_rect =
+                draw_volume_slider("Screenshake", panel_y + 132, panel_y + 148, self:get_screenshake_percent(),
+                    is_pause_focused("screenshake"))
+
+            local row_w = 140
+            self._pause_back_rect = {
+                x = panel_x + math.floor((panel_w - row_w) * 0.5 + 0.5), y = panel_y + 216,
+                w = row_w, h = 18,
+            }
+            draw_btn(self._pause_back_rect, "Back", self.C.MULT, is_pause_focused("back"))
         else
-            -- ===== SETTINGS GENERAL TAB =====
+            -- ===== SETTINGS GAME TAB =====
             love.graphics.printf("Settings", panel_x, panel_y + 10, panel_w, "center")
 
             love.graphics.setColor(self.C.GREY)
@@ -7344,47 +7784,9 @@ function Game:draw_bottom_pause()
                 end
             end
 
-            -- The active speed button is already highlighted, so a "Current: xN" line under
-            -- it was saying the same thing twice; the room it frees is what the screenshake
-            -- slider and the reduced-motion toggle sit in.
-            local track_x = panel_x + 36
-            local track_w = panel_w - 72
-            local knob_r = 7
-            local function draw_volume_slider(label, label_y, track_y, vol)
-                love.graphics.setColor(self.C.GREY)
-                love.graphics.setFont(self.FONTS.PIXEL.SMALL)
-                love.graphics.printf(label, panel_x, label_y, panel_w, "center")
-                local knob_x = track_x + (vol / 100) * track_w
-                local prev_lw = love.graphics.getLineWidth()
-                love.graphics.setColor(self.C.GREY)
-                love.graphics.setLineWidth(2)
-                love.graphics.line(track_x, track_y, track_x + track_w, track_y)
-                love.graphics.setColor(self.C.WHITE)
-                love.graphics.circle("fill", knob_x, track_y, knob_r)
-                love.graphics.setLineWidth(prev_lw)
-                return {
-                    x = track_x - knob_r,
-                    y = track_y - 12,
-                    w = track_w + knob_r * 2,
-                    h = 24,
-                    track_x = track_x,
-                    track_w = track_w,
-                    track_y = track_y,
-                }
-            end
-
-            self._pause_music_slider_rect =
-                draw_volume_slider("Music Volume", panel_y + 80, panel_y + 96, self:get_music_volume())
-            self._pause_sfx_slider_rect =
-                draw_volume_slider("SFX Volume", panel_y + 108, panel_y + 124, self:get_sfx_volume())
-            -- Reference `UI_definitions.lua:2305`: screenshake is a 0-100 slider, alongside
-            -- the volumes, not a hidden constant.
-            self._pause_screenshake_slider_rect =
-                draw_volume_slider("Screenshake", panel_y + 136, panel_y + 152, self:get_screenshake_percent())
-
             -- Board movement, as the reference arranges it (`UI_definitions.lua:2306-2309`): each
-            -- setting is its own control in the list rather than one combined mode. Screenshake is
-            -- the slider above; reduced motion and tilt are toggles.
+            -- setting is its own control in the list rather than one combined mode. Screenshake now
+            -- lives on the Audio tab with the other sliders; reduced motion and tilt are toggles.
             local row_w, row_h = 140, 22
             local row_gap = 8
             local reduced = self:reduced_motion_enabled()
@@ -7403,6 +7805,9 @@ function Game:draw_bottom_pause()
                 toggle_row[#toggle_row + 1] = { key = "tilt", label = "Tilt", on = self:tilt_enabled() }
             end
             toggle_row[#toggle_row + 1] = { key = "joker_display", label = "Joker Info", on = jd_on }
+            toggle_row[#toggle_row + 1] = {
+                key = "high_contrast", label = "Contrast", on = self:high_contrast_cards_enabled(),
+            }
 
             local toggle_h = 20
             local toggle_margin = 2
@@ -7414,10 +7819,12 @@ function Game:draw_bottom_pause()
             self._pause_reduced_motion_rect = nil
             self._pause_tilt_rect = nil
             self._pause_joker_display_rect = nil
+            self._pause_high_contrast_rect = nil
+            self._pause_skip_tutorial_rect = nil
             for i, t in ipairs(toggle_row) do
                 local r = {
                     x = toggle_x + (i - 1) * (toggle_w + row_gap),
-                    y = panel_y + 164,
+                    y = panel_y + 84,
                     w = toggle_w,
                     h = toggle_h,
                 }
@@ -7431,28 +7838,50 @@ function Game:draw_bottom_pause()
                     self._pause_reduced_motion_rect = r
                 elseif t.key == "tilt" then
                     self._pause_tilt_rect = r
-                else
+                elseif t.key == "joker_display" then
                     self._pause_joker_display_rect = r
+                else
+                    self._pause_high_contrast_rect = r
                 end
             end
 
-            local open_x
-            self._pause_controls_open_rect = { x = 0, y = panel_y + 190, w = row_w, h = row_h }
-            if BuildFlags.release then
-                open_x = panel_x + math.floor((panel_w - row_w) * 0.5 + 0.5)
-                self._pause_controls_open_rect.x = open_x
-                self._pause_performance_open_rect = nil
-            else
-                open_x = panel_x + math.floor((panel_w - row_w * 2 - row_gap) * 0.5 + 0.5)
-                self._pause_controls_open_rect.x = open_x
-                self._pause_performance_open_rect = {
-                    x = open_x + row_w + row_gap, y = panel_y + 190, w = row_w, h = row_h,
+            if self.SETTINGS and self.SETTINGS.TUTORIAL_COMPLETE ~= true then
+                self._pause_skip_tutorial_rect = {
+                    x = panel_x + 82, y = panel_y + 116, w = panel_w - 164, h = 22,
+                }
+                draw_btn(self._pause_skip_tutorial_rect, "Skip Tutorial", self.C.RED,
+                    is_pause_focused("skip_tutorial"))
+            end
+
+            -- Subsections: Audio always exists, Performance is dev-only. Sized dynamically like
+            -- the toggle row above so a mod-added tab can join this list without a layout rewrite.
+            local open_defs = {
+                { key = "audio_open", label = "Audio", field = "_pause_audio_open_rect", color = self.C.BLUE },
+                { key = "controls_open", label = "Controls", field = "_pause_controls_open_rect", color = self.C.BOOSTER },
+            }
+            if not BuildFlags.release then
+                open_defs[#open_defs + 1] = {
+                    key = "performance_open", label = "Performance",
+                    field = "_pause_performance_open_rect", color = self.C.ORANGE,
                 }
             end
-            draw_btn(self._pause_controls_open_rect, "Controls", self.C.BOOSTER, is_pause_focused("controls_open"))
-            if self._pause_performance_open_rect then
-                draw_btn(self._pause_performance_open_rect, "Performance", self.C.ORANGE,
-                    is_pause_focused("performance_open"))
+            local open_count = #open_defs
+            local open_w = math.min(row_w, math.floor(
+                (panel_w - toggle_margin * 2 - row_gap * (open_count - 1)) / open_count))
+            local open_span = open_w * open_count + row_gap * (open_count - 1)
+            local open_x0 = panel_x + math.floor((panel_w - open_span) * 0.5 + 0.5)
+            self._pause_audio_open_rect = nil
+            self._pause_controls_open_rect = nil
+            self._pause_performance_open_rect = nil
+            for i, def in ipairs(open_defs) do
+                local r = {
+                    x = open_x0 + (i - 1) * (open_w + row_gap),
+                    y = panel_y + 190,
+                    w = open_w,
+                    h = row_h,
+                }
+                self[def.field] = r
+                draw_btn(r, def.label, def.color, is_pause_focused(def.key))
             end
 
             self._pause_back_rect = {
@@ -7731,7 +8160,7 @@ function Game:run_start_steps()
     return {
         function() self:_run_start_leave_menu() end,
         function() self:warm_atlases({ "centers" }) end,
-        function() self:warm_atlases({ "cards_2" }) end,
+        function() self:warm_atlases({ self:get_playing_card_atlas_name() }) end,
         function() self:_run_start_reset_objects() end,
         function()
             self:initialize_run_loop()
@@ -7751,6 +8180,7 @@ end
 
 function Game:start_challenge_run(challenge_id)
     if not (CHALLENGE_DEFS_BY_ID and CHALLENGE_DEFS_BY_ID[challenge_id]) then return false end
+    if not self:is_challenge_unlocked(challenge_id) then return false end
     self._pending_challenge_id = challenge_id
     self._pending_deck_id = "b_challenge"
     self._pending_stake_id = "stake_white"
@@ -7940,7 +8370,7 @@ end
 --- that started it: pausing out to the menu mid-slide would otherwise fire the
 --- commit from the menu. Anything but the owning state cancels it outright.
 function Game:_update_scene_transitions(dt)
-    if self._deck_view_open then return end
+    if self:modal_overlay_open() then return end
     -- Advance by capped steps: an asset-load or GC hitch can hand us a dt
     -- larger than the whole animation, which would finish it in one frame and
     -- read as no animation at all. Better to run slightly long than to skip.
@@ -8262,6 +8692,20 @@ function Game:update(dt, real_dt)
     if self.STATE == self.STATES.PAUSED then
         return
     end
+    TutorialUI.update(self)
+    Milestones.update(self, real_dt)
+    if self._voucher_callout then
+        self._voucher_callout.t = self._voucher_callout.t - real_dt
+        if self._voucher_callout.t <= 0 or self.STATE ~= self.STATES.SHOP then
+            self._voucher_callout = nil
+        end
+    end
+    if self._tag_activation then
+        self._tag_activation.age = self._tag_activation.age + real_dt
+        if self._tag_activation.age >= self._tag_activation.duration then
+            self._tag_activation = nil
+        end
+    end
     if self.STATE ~= self.STATES.ROUND_EVAL then
         Particles.update(real_dt)
     end
@@ -8300,9 +8744,6 @@ function Game:update(dt, real_dt)
         MainMenuUI.update(self, real_dt)
     end
     if self._deck_view_open then
-        if DeckViewUI.update then
-            DeckViewUI.update(self, real_dt)
-        end
         for _, node in ipairs(self._deck_view_nodes or {}) do
             if node and node.update then
                 node:update(dt)
@@ -9795,11 +10236,14 @@ function Game:_apply_one_joker_emit()
             j:apply_edition_on_hand_scored(q.ctx)
         end
         self:_sync_joker_ctx(q.ctx)
+        local joker_effect_triggered = false
         if j.apply_effect then
             if q.pre_matched == true or (j.matches_trigger and q.event_name and j:matches_trigger(q.event_name, q.ctx)) then
                 j:apply_effect(q.ctx)
                 did_trigger = edition_triggered
                     or q.ctx._joker_effect_applied_now == true
+                    or q.ctx._joker_effect_created_item_now == true
+                joker_effect_triggered = q.ctx._joker_effect_applied_now == true
                     or q.ctx._joker_effect_created_item_now == true
                 -- Reference evals carry their own `delay`; a joker that asked for one holds
                 -- the beat for that long instead of the 0.9375 s default.
@@ -9814,6 +10258,10 @@ function Game:_apply_one_joker_emit()
             if edition == "polychrome" then edition_triggered = true end
             j:apply_edition_on_hand_scored(q.ctx, true)
             self:_sync_joker_ctx(q.ctx)
+        end
+        if edition_triggered and not joker_effect_triggered then
+            did_trigger = true
+            self._joker_emit_interval = tonumber(self.JOKER_EDITION_EMIT_INTERVAL) or 0.18
         end
     end
     self._joker_emit_next = self._joker_emit_next + 1
@@ -10443,7 +10891,8 @@ function Game:_shop_voucher_candidate_ids(exclude_ids)
                 local tier = tonumber(def.tier) or 1
                 if tier == 2 then
                     local req = def.depends_on
-                    if type(req) == "string" and req ~= "" and self:has_voucher(req) then
+                    if self:is_voucher_unlocked(vid)
+                        and type(req) == "string" and req ~= "" and self:has_voucher(req) then
                         candidates[#candidates + 1] = vid
                     end
                 else
@@ -10567,10 +11016,13 @@ function Game:buy_shop_voucher(slot_index)
     if self:_voucher_already_owned(offer.id) then return false end
 
     local voucher_id = offer.id
-    self.money = (tonumber(self.money) or 0) - self:get_shop_voucher_price(offer)
+    local voucher_price = self:get_shop_voucher_price(offer)
+    self.money = (tonumber(self.money) or 0) - voucher_price
+    self:add_career_stat("c_shop_dollars_spent", math.max(0, voucher_price))
     self:increment_challenge_inflation()
     if not self.vouchers then self.vouchers = {} end
     self.vouchers[#self.vouchers + 1] = voucher_id
+    if voucher_id == "v_blank" then self:add_career_stat("c_blank_redeems", 1) end
     self:apply_voucher_effect(voucher_id)
     table.remove(self.shop_voucher_offers, slot_index)
     if self.shop_voucher_nodes and self.shop_voucher_nodes[slot_index] then
@@ -10597,12 +11049,14 @@ function Game:buy_shop_voucher(slot_index)
         Sfx.play("coin1")
     end
     self:discover_item(offer.id)
+    self._voucher_callout = { name = offer.name or voucher_id, t = 1.6, duration = 1.6 }
     self:emit_joker_event("on_shop_buy", {
         offer = offer,
         offer_kind = "voucher",
         offer_id = offer.id,
         offer_price = tonumber(offer.price) or 0,
     })
+    self:check_voucher_unlocks()
     return true
 end
 
@@ -11471,6 +11925,7 @@ function Game:roll_skips()
 
     self.skips = {}
     self.skip_tag_orbital_hand = {}
+    self.blinds_skipped = {}
     for slot = 1, 2 do
         local tag_key = eligible_tags[self:random("tag", 1, #eligible_tags)]
         self.skips[slot] = tag_key_to_id(tag_key)
@@ -11623,6 +12078,7 @@ function Game:buy_shop_booster(slot_index)
         }
     end
     self.money = (tonumber(self.money) or 0) - price
+    self:add_career_stat("c_shop_dollars_spent", math.max(0, price))
     self:increment_challenge_inflation()
     self:_play_shop_buy_sfx()
     local sprite_idx = tonumber(offer.booster_sprite_index) or 0
@@ -11639,6 +12095,7 @@ function Game:buy_shop_booster(slot_index)
     self.active_shop_booster_slot = nil
     self:sync_shop_booster_nodes()
     self:begin_booster_session(offer, opening_origin)
+    self:check_voucher_unlocks()
     return true
 end
 
@@ -12504,6 +12961,7 @@ function Game:enter_round_win_after_blind()
         end
         self.ante = (tonumber(self.ante) or 1) + 1
         self:check_unlock("ante_up", { ante = self.ante })
+        self:check_voucher_unlocks({ ante = self.ante, hand_size = self:get_effective_hand_size_limit() })
         -- The Ox's target is re-fixed only here, as a Boss blind falls
         -- (`state_events.lua:132-138`).
         self:freeze_most_played_hand()
@@ -12604,6 +13062,12 @@ function Game:_finish_round_win_eval(ctx, hands_left)
     local interest = math.floor(math.min(math.max(0, self.money), interest_count_cap) / 5)
     interest = math.min(interest, cap_dollars)
     if self._deck_no_interest or (self.challenge_modifiers and self.challenge_modifiers.no_interest == true) then interest = 0 end
+    if cap_dollars > 0 and interest >= cap_dollars then
+        self:add_career_stat("c_round_interest_cap_streak", 1)
+    elseif type(self.career_stats) == "table" then
+        self.career_stats.c_round_interest_cap_streak = 0
+    end
+    self:check_voucher_unlocks()
 
     self:recycle_full_deck_after_blind_win()
 
@@ -13350,6 +13814,14 @@ function Game:_update_blind_defeat(dt)
 
     if d.t < d.hold then return end
     self._blind_defeat = nil
+    -- The Ante 8 victory interrupts before ROUND_EVAL in the reference. Its payout remains
+    -- pending and is only shown if the player chooses Endless Mode; New Run/Menu need no
+    -- cash-out because the completed run is over.
+    if self._last_completed_blind_was_boss and (tonumber(self.ante) or 1) > 8
+        and not self._endless_mode then
+        self:enter_you_win()
+        return
+    end
     self:set_state(self.STATES.ROUND_EVAL)
     -- The panel slides up and lands with a jiggle and cardFan2 (see _update_scene_transitions).
     self._round_eval_slide = { mode = "in", t = 0 }
@@ -13525,7 +13997,11 @@ function Game:enter_you_win()
     self:ensure_victory_progress_recorded()
     -- Reference `functions/state_events.lua:1-43` reserves this cue for
     -- `win_game`, which is reached only after defeating the Ante 8 Boss.
-    if Sfx and Sfx.play then Sfx.play("win") end
+    if Sfx and Sfx.play then
+        Sfx.play("win")
+        Sfx.play("timpani", 1, 0.65)
+        Sfx.play_voice(nil, 1, 0.55)
+    end
     self:set_state(self.STATES.YOU_WIN)
 end
 
@@ -13556,7 +14032,19 @@ end
 function Game:continue_from_you_win_endless()
     self:ensure_victory_progress_recorded()
     self._endless_mode = true
-    self:enter_shop_after_blind()
+    -- The winning blind was evaluated before the win screen, but its rewards were not
+    -- displayed or credited. Endless resumes at that deferred Cash Out, then proceeds to
+    -- the shop through the ordinary ROUND_EVAL path.
+    if self._round_win_display_lines and #self._round_win_display_lines > 0 then
+        self._round_win_line_timer = 0
+        self._round_win_lines_revealed = 0
+        self._round_win_row_tick = nil
+        self:set_state(self.STATES.ROUND_EVAL)
+        self._round_eval_slide = { mode = "in", t = 0 }
+    else
+        -- Legacy saves made before deferred victory payouts existed have no panel to resume.
+        self:enter_shop_after_blind()
+    end
 end
 
 function Game:do_random(min,max,goal,key)
@@ -13707,6 +14195,14 @@ function Game:buy_shop_joker(slot_index)
     if not ok then return false end
 
     self.money = (tonumber(self.money) or 0) - price
+    self:add_career_stat("c_shop_dollars_spent", math.max(0, price))
+    if k == "tarot" then
+        self:add_career_stat("c_tarots_bought", 1)
+    elseif k == "planet" then
+        self:add_career_stat("c_planets_bought", 1)
+    elseif k == "playing_card" then
+        self:add_career_stat("c_playing_cards_bought", 1)
+    end
     self:increment_challenge_inflation()
     self:_play_shop_buy_sfx()
     self.active_shop_booster_slot = nil
@@ -13731,6 +14227,7 @@ function Game:buy_shop_joker(slot_index)
     end
     self:refresh_shop_prices()
     self:layout_shop_panels()
+    self:check_voucher_unlocks()
     return true
 end
 
@@ -13750,6 +14247,12 @@ function Game:buy_and_use_shop_consumable(slot_index)
     c.id = offer.id
 
     self.money = (tonumber(self.money) or 0) - price
+    self:add_career_stat("c_shop_dollars_spent", math.max(0, price))
+    if kind == "tarot" then
+        self:add_career_stat("c_tarots_bought", 1)
+    elseif kind == "planet" then
+        self:add_career_stat("c_planets_bought", 1)
+    end
     self:increment_challenge_inflation()
     self:_play_shop_buy_sfx()
     self.active_shop_booster_slot = nil
@@ -13777,6 +14280,7 @@ function Game:buy_and_use_shop_consumable(slot_index)
     end
     self:refresh_shop_prices()
     self:layout_shop_panels()
+    self:check_voucher_unlocks()
     return true
 end
 
@@ -13915,10 +14419,12 @@ function Game:handle_failed_blind_reset()
     if Sfx and Sfx.play then
         Sfx.play("negative", 0.5, 0.7)
         Sfx.play("whoosh2", 0.9, 0.7)
+        Sfx.play_voice(nil, 0.94, 0.5)
     end
     self:clear_run_snapshot()
     self:add_career_stat("c_losses", 1)
     self:record_run_high_scores()
+    self:queue_run_record_milestones()
     if type(self.career_stats) == "table" then
         self.career_stats.c_current_streak = 0
     end
@@ -14106,7 +14612,7 @@ end
 --- Shoulder presses on screens that don't show the panels at all (pause overlay,
 --- menus, end-of-run) must be inert in BOTH directions, not just for opening.
 function Game:_panel_toggle_blocked()
-    if self._deck_view_open then return true end
+    if self:modal_overlay_open() then return true end
     local s = self.STATE
     return s == self.STATES.MENU or s == self.STATES.PAUSED
         or s == self.STATES.GAME_OVER or s == self.STATES.YOU_WIN
@@ -14461,6 +14967,54 @@ function Game:handle_pause_settings_touch(x, y)
             end
             return
         end
+        if self._pause_settings_tab == "audio" then
+            local slider = self._pause_master_slider_rect
+            if slider and self:_point_in_rect_simple(x, y, slider) then
+                self._pause_master_slider_drag = true
+                self._pause_music_slider_drag = false
+                self._pause_sfx_slider_drag = false
+                self._pause_screenshake_slider_drag = false
+                local vol = self:_master_volume_from_slider_x(x)
+                if vol ~= nil then self:set_master_volume(vol, { skip_save = true }) end
+                return
+            end
+            slider = self._pause_music_slider_rect
+            if slider and self:_point_in_rect_simple(x, y, slider) then
+                self._pause_master_slider_drag = false
+                self._pause_music_slider_drag = true
+                self._pause_sfx_slider_drag = false
+                local vol = self:_music_volume_from_slider_x(x)
+                if vol ~= nil then self:set_music_volume(vol, { skip_save = true }) end
+                return
+            end
+            slider = self._pause_sfx_slider_rect
+            if slider and self:_point_in_rect_simple(x, y, slider) then
+                self._pause_master_slider_drag = false
+                self._pause_sfx_slider_drag = true
+                self._pause_music_slider_drag = false
+                self._pause_screenshake_slider_drag = false
+                local vol = self:_sfx_volume_from_slider_x(x)
+                if vol ~= nil then self:set_sfx_volume(vol, { skip_save = true }) end
+                return
+            end
+            slider = self._pause_screenshake_slider_rect
+            if slider and self:_point_in_rect_simple(x, y, slider) then
+                self._pause_master_slider_drag = false
+                self._pause_screenshake_slider_drag = true
+                self._pause_music_slider_drag = false
+                self._pause_sfx_slider_drag = false
+                local pct = self:_screenshake_from_slider_x(x)
+                if pct ~= nil then self:set_screenshake_percent(pct, { skip_save = true }) end
+                return
+            end
+            if self._pause_back_rect and self:_point_in_rect_simple(x, y, self._pause_back_rect) then
+                self:end_pause_slider_drag()
+                self._pause_settings_tab = "general"
+                self._pause_focus_index = 1
+                return
+            end
+            return
+        end
         -- Settings general tab touch
         for _, r in ipairs(self._pause_speed_rects or {}) do
             if self:_point_in_rect_simple(x, y, r) then
@@ -14471,32 +15025,6 @@ function Game:handle_pause_settings_touch(x, y)
                 end
                 return
             end
-        end
-        local slider = self._pause_music_slider_rect
-        if slider and self:_point_in_rect_simple(x, y, slider) then
-            self._pause_music_slider_drag = true
-            self._pause_sfx_slider_drag = false
-            local vol = self:_music_volume_from_slider_x(x)
-            if vol ~= nil then self:set_music_volume(vol, { skip_save = true }) end
-            return
-        end
-        slider = self._pause_sfx_slider_rect
-        if slider and self:_point_in_rect_simple(x, y, slider) then
-            self._pause_sfx_slider_drag = true
-            self._pause_music_slider_drag = false
-            self._pause_screenshake_slider_drag = false
-            local vol = self:_sfx_volume_from_slider_x(x)
-            if vol ~= nil then self:set_sfx_volume(vol, { skip_save = true }) end
-            return
-        end
-        slider = self._pause_screenshake_slider_rect
-        if slider and self:_point_in_rect_simple(x, y, slider) then
-            self._pause_screenshake_slider_drag = true
-            self._pause_music_slider_drag = false
-            self._pause_sfx_slider_drag = false
-            local pct = self:_screenshake_from_slider_x(x)
-            if pct ~= nil then self:set_screenshake_percent(pct, { skip_save = true }) end
-            return
         end
         if self._pause_reduced_motion_rect
             and self:_point_in_rect_simple(x, y, self._pause_reduced_motion_rect) then
@@ -14513,6 +15041,23 @@ function Game:handle_pause_settings_touch(x, y)
             and self:_point_in_rect_simple(x, y, self._pause_joker_display_rect) then
             self:end_pause_slider_drag()
             self:set_joker_display_enabled(not self:joker_display_enabled())
+            return
+        end
+        if self._pause_high_contrast_rect
+            and self:_point_in_rect_simple(x, y, self._pause_high_contrast_rect) then
+            self:end_pause_slider_drag()
+            self:set_high_contrast_cards(not self:high_contrast_cards_enabled())
+            return
+        end
+        if self._pause_skip_tutorial_rect
+            and self:_point_in_rect_simple(x, y, self._pause_skip_tutorial_rect) then
+            self:end_pause_slider_drag()
+            self:skip_tutorial()
+            return
+        end
+        if self._pause_audio_open_rect and self:_point_in_rect_simple(x, y, self._pause_audio_open_rect) then
+            self._pause_settings_tab = "audio"
+            self._pause_focus_index = 1
             return
         end
         if self._pause_controls_open_rect and self:_point_in_rect_simple(x, y, self._pause_controls_open_rect) then
@@ -14566,6 +15111,10 @@ function Game:touchpressed(id, x, y)
     end
     if self._deck_view_open then
         DeckViewUI.handle_touchpressed(self, id, x, y)
+        return
+    end
+    if self._run_info_open then
+        RunInfoUI.handle_touchpressed(self, id, x, y)
         return
     end
     if self.STATE == self.STATES.PAUSED then
@@ -14763,9 +15312,13 @@ function Game:touchmoved(id, x, y, dx, dy)
         DeckViewUI.handle_touchmoved(self, id, x, y, dx, dy)
         return
     end
+    if self._run_info_open then return end
     if self.STATE == self.STATES.PAUSED then
         if self._pause_show_settings and self._pause_settings_tab ~= "controls" then
-            if self._pause_music_slider_drag then
+            if self._pause_master_slider_drag then
+                local vol = self:_master_volume_from_slider_x(x)
+                if vol ~= nil then self:set_master_volume(vol, { skip_save = true }) end
+            elseif self._pause_music_slider_drag then
                 local vol = self:_music_volume_from_slider_x(x)
                 if vol ~= nil then self:set_music_volume(vol, { skip_save = true }) end
             elseif self._pause_sfx_slider_drag then
@@ -14833,11 +15386,13 @@ function Game:touchreleased(id, x, y)
         DeckViewUI.handle_touchreleased(self, id, x, y)
         return
     end
+    if self._run_info_open then return end
     if self.STATE == self.STATES.PAUSED then
-        if self._pause_music_slider_drag or self._pause_sfx_slider_drag
+        if self._pause_master_slider_drag or self._pause_music_slider_drag or self._pause_sfx_slider_drag
             or self._pause_screenshake_slider_drag then
             self:save_settings()
         end
+        self._pause_master_slider_drag = false
         self._pause_music_slider_drag = false
         self._pause_sfx_slider_drag = false
         self._pause_screenshake_slider_drag = false
@@ -15706,7 +16261,7 @@ end
 --- can differ after an inventory action hands focus back to the hand mid-press.
 ---@return boolean
 function Game:hand_cancel_gesture_available()
-    if self._deck_view_open then return false end
+    if self:modal_overlay_open() then return false end
     if self:get_gamepad_focus_layer() ~= "hand" then return false end
     if self.STATE ~= self.STATES.SELECTING_HAND and not self:is_booster_hand_mode() then
         return false
@@ -15919,7 +16474,7 @@ local FOCUS_RESTORE_DIRECTIONS = {
 ---@return boolean
 function Game:consumes_focus_restore_press(button)
     if self.input_mode ~= "touch" then return false end
-    if self.STATE == self.STATES.PAUSED or self._deck_view_open or self._collection_open then
+    if self.STATE == self.STATES.PAUSED or self:modal_overlay_open() or self._collection_open then
         return false
     end
     local s = self.STATE

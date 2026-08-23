@@ -300,6 +300,17 @@ function Consumable:draw()
         love.graphics.setColor(1, 1, 1, dissolve and (1 - dissolve) or 1)
         love.graphics.draw(self.atlas.image, self.quad, cx, cy, rot, scale, scale,
             cx - draw_x, cy - draw_y)
+        if self.def and self.def.id == "spectral_soul" then
+            -- The Soul has a dedicated shader layer in the reference. One faint additive
+            -- echo gives the rare card its own silhouette without a shader or resident asset.
+            local t = Fx and Fx.time and Fx.time() or 0
+            love.graphics.setBlendMode("add")
+            love.graphics.setColor(0.45, 0.2, 0.8, 0.22)
+            love.graphics.draw(self.atlas.image, self.quad, cx + math.sin(t * 1.4) * 1.2,
+                cy + math.cos(t * 1.1) * 1.2, rot, scale * 1.025, scale * 1.025,
+                cx - draw_x, cy - draw_y)
+            love.graphics.setBlendMode("alpha")
+        end
         return self:draw_focus_outline()
     end
 

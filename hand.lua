@@ -149,6 +149,11 @@ local PLAY_TRIGGER_INTERVAL = 0.75
 --- card, where the reference rings one per effect. Splitting that means restructuring the pass
 --- itself, which is the scoring change this deliberately avoids.
 local PLAY_EFFECT_INTERVAL = 0.8125
+-- Editions already announce themselves with a popup, cue and juice. Charging the full
+-- effect interval after Polychrome made the sequencer look frozen for almost a second.
+-- The reference gives the status event a short accent rather than another full card beat.
+local EDITION_EFFECT_INTERVAL = 0.18
+Hand.EDITION_EFFECT_INTERVAL = EDITION_EFFECT_INTERVAL
 --- Beat for the joker that caused a retrigger (Mime, Hack, ...) to shake on its own before the
 --- replay. The reference announces one through the same path as a joker trigger: `0.75*1.25`.
 local RETRIGGER_NOTICE_INTERVAL = 0.9375
@@ -1651,10 +1656,11 @@ function Hand:_update_play_sequence(dt)
                         or mult_after_listeners ~= mult_after_own then
                         extra = extra + 1
                     end
-                    if chips ~= chips_after_listeners or mult ~= mult_after_listeners then
-                        extra = extra + 1
-                    end
+                    local edition_changed = chips ~= chips_after_listeners or mult ~= mult_after_listeners
                     seq.trigger_wait = seq.trigger_wait + extra * PLAY_EFFECT_INTERVAL
+                    if edition_changed then
+                        seq.trigger_wait = seq.trigger_wait + EDITION_EFFECT_INTERVAL
+                    end
                 end
             end
         end

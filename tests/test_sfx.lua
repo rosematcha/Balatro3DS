@@ -313,8 +313,8 @@ end)
 
 suite.test("preload loads the shipped cues", function()
     local loaded = Sfx.preload()
-    T.assert_eq(loaded, 46,
-        string.format("preload should load exactly 46 active cues, got %d", loaded))
+    T.assert_eq(loaded, 58,
+        string.format("preload should load exactly 58 active cues, got %d", loaded))
 end)
 
 suite.test("ambient beds are allowed off-console and fade in from level updates", function()

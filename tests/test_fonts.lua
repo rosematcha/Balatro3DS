@@ -148,24 +148,43 @@ suite.test("an unknown profile falls back to the default rather than erroring", 
     T.assert_eq(pixel.PROFILE, Fonts.DEFAULT_PROFILE)
 end)
 
-suite.test("the crisp fonts experiment registers and drives apply", function()
-    local Fonts, lab = fresh()
-    T.assert_true(lab.is_available("crisp_fonts"))
-    T.assert_false(lab.is_enabled("crisp_fonts"), "starts off, i.e. on the shipped ladder")
 
+--- `printf` neither clips nor scrolls on 3DS, so a rule that wraps to one more line than its
+--- box allows draws straight over whatever is under it. The same string is three lines at
+--- SMALL under the shared ladder and four under the native one, which is exactly the case
+--- the deck screen hits: its rule sits in a 44 px gap above the matrix.
+suite.test("fit_block steps down until the wrapped text fits the box", function()
+    local Fonts = fresh()
     bootstrap.load()
-    local previous = G
-    G = { FONTS = { PIXEL = Fonts.build("shared") } }
+    local game = { FONTS = { PIXEL = Fonts.build("native") } }
+    local P = game.FONTS.PIXEL
 
-    lab.toggle("crisp_fonts")
-    T.assert_eq(G.FONTS.PIXEL.PROFILE, "native")
+    local long = "+$2 per remaining Hand, +$1 per remaining Discard. No interest earned."
+    local _, lines = P.SMALL:getWrap(long, 120)
+    T.assert_true(#lines * P.SMALL:getHeight() > 44, "SMALL overruns the box, or this proves nothing")
 
-    -- "All Off" has to put the fonts back, not just clear the flag.
-    lab.disable_all()
-    T.assert_false(lab.is_enabled("crisp_fonts"))
-    T.assert_eq(G.FONTS.PIXEL.PROFILE, "shared")
+    local fitted = Fonts.fit_block(game, P.SMALL, long, 120, 44)
+    local _, fitted_lines = fitted:getWrap(long, 120)
+    T.assert_true(#fitted_lines * fitted:getHeight() <= 44, "the chosen face fits")
+    T.assert_true(fitted:getHeight() < P.SMALL:getHeight(), "and it stepped down to get there")
+end)
 
-    G = previous
+suite.test("fit_block leaves text that already fits alone", function()
+    local Fonts = fresh()
+    bootstrap.load()
+    local game = { FONTS = { PIXEL = Fonts.build("native") } }
+    local P = game.FONTS.PIXEL
+    T.assert_eq(Fonts.fit_block(game, P.SMALL, "+1 Discard every round", 120, 44), P.SMALL)
+end)
+
+suite.test("fit_block bottoms out rather than looping forever", function()
+    local Fonts = fresh()
+    bootstrap.load()
+    local game = { FONTS = { PIXEL = Fonts.build("native") } }
+    local P = game.FONTS.PIXEL
+    -- Nothing fits a 1 px box; the smallest face on the ladder is the honest answer.
+    local fitted = Fonts.fit_block(game, P.SMALL, "a much longer string than this box holds", 40, 1)
+    T.assert_eq(fitted, P.MICRO)
 end)
 
 suite.test("the status line reports the live profile and native face count", function()
