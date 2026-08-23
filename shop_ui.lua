@@ -418,6 +418,17 @@ function ShopUI.draw_shop_button(game, param)
         local ix, iy, iw, ih = draw_button_with_shadow(x, y, w, h, 4, 2, color, game.C.BLOCK.SHADOW, 2)
         love.graphics.setColor(game.C.WHITE)
 
+        -- Card focus is drawn by the nodes themselves. These two controls have no node, so
+        -- give their D-pad target the same unobtrusive outline the reference cursor supplies.
+        if param.focused then
+            local lw = love.graphics.getLineWidth()
+            love.graphics.setLineWidth(2)
+            love.graphics.setColor(0, 0, 0, 1)
+            love.graphics.rectangle("line", ix - 1, iy - 1, iw + 2, ih + 2, 4, 4)
+            love.graphics.setLineWidth(lw)
+            love.graphics.setColor(game.C.WHITE)
+        end
+
         -- A prompt belongs on controls that the pad can actually activate. It is
         -- only shown while the pad owns focus, matching the hand action bar and
         -- keeping the touch layout clean.
@@ -673,6 +684,9 @@ function ShopUI.draw_bottom_shop(game)
     reroll_hit.w, reroll_hit.h = shop_reroll_rect.w, shop_reroll_rect.h
     game._shop_continue_rect = continue_hit
     game._shop_reroll_rect = reroll_hit
+    local focused = game:gamepad_focus_visible() and game:get_shop_gamepad_focus()
+    shop_continue_rect.focused = focused and focused.kind == "control" and focused.action == "continue"
+    shop_reroll_rect.focused = focused and focused.kind == "control" and focused.action == "reroll"
     ShopUI.draw_shop_button(game, shop_continue_rect)
     ShopUI.draw_shop_button(game, shop_reroll_rect)
 

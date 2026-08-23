@@ -187,4 +187,51 @@ suite.test("the shop puts Buy & Use on Y and the reroll on X", function()
     T.assert_true(bought_use)
 end)
 
+suite.test("shop D-pad navigation follows the shelf layout and stops at edges", function()
+    local g = bootstrap.new_game(5150)
+    _G.G = g
+    g.STATE = g.STATES.SHOP
+    g.money = 40
+    g.shop_offer_slots = 2
+    g.shop_booster_slots = 1
+    g:roll_shop_offers()
+    g:roll_shop_boosters()
+    g:roll_shop_voucher()
+    g:sync_shop_offer_nodes()
+    g:sync_shop_booster_nodes()
+    g:sync_shop_voucher_nodes()
+    g._shop_continue_rect = { x = 8, y = 49, w = 74, h = 45 }
+    g._shop_reroll_rect = { x = 8, y = 98, w = 74, h = 45 }
+    g._shop_offer_rects = {
+        { x = 90, y = 49, w = 54, h = 90 },
+        { x = 158, y = 49, w = 54, h = 90 },
+    }
+    g._shop_voucher_rects = {
+        { x = 54, y = 151, w = 54, h = 75 },
+    }
+    g._shop_booster_rects = {
+        { x = 182, y = 151, w = 54, h = 75 },
+    }
+    g:init_shop_gamepad_nav()
+
+    T.assert_eq(g:get_shop_gamepad_focus().action, "continue", "Next Round is the entry focus")
+    T.assert_eq(g:shop_gamepad_move_direction("left"), nil, "there is no wrapping at an edge")
+    T.assert_eq(g:shop_gamepad_move_direction("right").kind, "offer")
+    T.assert_eq(g:shop_gamepad_move_direction("down").action, "reroll", "down finds the adjacent control")
+    T.assert_eq(g:shop_gamepad_move_direction("down").kind, "voucher", "down continues into the nearest shelf")
+    T.assert_eq(g:shop_gamepad_move_direction("right").kind, "booster", "right crosses to the pack shelf")
+end)
+
+suite.test("A activates the focused Shop control", function()
+    local g = bootstrap.new_game(5149)
+    _G.G = g
+    g.STATE = g.STATES.SHOP
+    g:init_shop_gamepad_nav()
+    local continued = false
+    g.continue_from_shop = function() continued = true end
+
+    T.assert_true(g:handle_gamepad_shop("a"))
+    T.assert_true(continued)
+end)
+
 return suite

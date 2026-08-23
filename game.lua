@@ -15759,7 +15759,7 @@ function Game:handle_gamepad_shop_vertical(button)
     if self:_handle_bottom_inventory_vertical(button) then
         return true
     end
-    return false
+    return self:shop_gamepad_move_direction((button == "up" or button == "dpup") and "up" or "down") ~= nil
 end
 
 --- Volume for the focus-move tick, matching what the menu screens play.
@@ -15952,7 +15952,10 @@ end
 function Game:init_shop_gamepad_nav()
     self._gamepad_bottom_layer = "shop"
     self._gamepad_focus_layer = "hand"
-    self._shop_focus_index = nil
+    -- The reference opens the shop with Next Round focused (`game.lua:3170`), rather than
+    -- silently parking a cyclic cursor on its first card. Keeping that anchor makes the
+    -- first D-pad press predictable even before the shelf finishes appearing.
+    self._shop_focus_index = 1
     self._joker_focus_index = nil
     self._joker_swap_pick_index = nil
 end
@@ -15976,22 +15979,45 @@ end
 
 function Game:build_shop_focus_targets()
     local targets = {}
+    -- These are proper focus targets in the reference UI, alongside the card areas
+    -- (`reference/Balatro/functions/UI_definitions.lua:682-707`).  The previous port-only
+    -- list skipped both controls, which made the D-pad jump through unrelated cards.
+    targets[#targets + 1] = {
+        kind = "control", action = "continue", key = "continue",
+        rect = self._shop_continue_rect or { x = 8, y = 49, w = 74, h = 45 },
+    }
+    targets[#targets + 1] = {
+        kind = "control", action = "reroll", key = "reroll",
+        rect = self._shop_reroll_rect or { x = 8, y = 98, w = 74, h = 45 },
+    }
     for i, node in ipairs(self.shop_offer_nodes or {}) do
         local offer = self.shop_offers and self.shop_offers[i]
         if node and offer then
-            targets[#targets + 1] = { kind = "offer", slot = i, node = node }
+            targets[#targets + 1] = {
+                kind = "offer", slot = i, node = node,
+                rect = self._shop_offer_rects and self._shop_offer_rects[i]
+                    or (node.get_collision_rect and node:get_collision_rect()),
+            }
         end
     end
     for i, node in ipairs(self.shop_voucher_nodes or {}) do
         local offer = self.shop_voucher_offers and self.shop_voucher_offers[i]
         if node and offer then
-            targets[#targets + 1] = { kind = "voucher", slot = i, node = node }
+            targets[#targets + 1] = {
+                kind = "voucher", slot = i, node = node,
+                rect = self._shop_voucher_rects and self._shop_voucher_rects[i]
+                    or (node.get_collision_rect and node:get_collision_rect()),
+            }
         end
     end
     for i, node in ipairs(self.shop_booster_nodes or {}) do
         local offer = self.shop_booster_offers and self.shop_booster_offers[i]
         if node and offer then
-            targets[#targets + 1] = { kind = "booster", slot = i, node = node }
+            targets[#targets + 1] = {
+                kind = "booster", slot = i, node = node,
+                rect = self._shop_booster_rects and self._shop_booster_rects[i]
+                    or (node.get_collision_rect and node:get_collision_rect()),
+            }
         end
     end
     return targets
@@ -16039,25 +16065,46 @@ function Game:sync_shop_gamepad_focus()
     self:sync_shop_gamepad_tooltips(targets[idx])
 end
 
-function Game:shop_gamepad_move(delta)
+--- Move through the shop by screen position, as the reference controller does
+--- (`reference/Balatro/engine/controller.lua:1204-1243`).  Its generic focus system picks the
+--- nearest eligible item in a direction and leaves focus at an edge; the old port instead made
+--- every shelf a single wrapping left/right list.
+---@param direction "left"|"right"|"up"|"down"
+function Game:shop_gamepad_move_direction(direction)
     local targets = self:build_shop_focus_targets()
     if #targets == 0 then return nil end
-    self:ensure_shop_gamepad_nav()
-    delta = math.floor(tonumber(delta) or 0)
-    local idx = tonumber(self._shop_focus_index)
-    if not idx then
-        idx = (delta >= 0) and 1 or #targets
-    else
-        idx = idx + delta
-        if idx < 1 then idx = #targets elseif idx > #targets then idx = 1 end
+
+    local current_index = tonumber(self._shop_focus_index) or 1
+    current_index = math.max(1, math.min(#targets, current_index))
+    local current = targets[current_index]
+    local rect = current and current.rect
+    if type(rect) ~= "table" then return nil end
+    local cx, cy = rect.x + rect.w * 0.5, rect.y + rect.h * 0.5
+    local best, best_index, best_distance
+
+    for i, candidate in ipairs(targets) do
+        local candidate_rect = candidate.rect
+        if i ~= current_index and type(candidate_rect) == "table" then
+            local dx = candidate_rect.x + candidate_rect.w * 0.5 - cx
+            local dy = candidate_rect.y + candidate_rect.h * 0.5 - cy
+            local eligible = (direction == "left" and dx < -0.1)
+                or (direction == "right" and dx > 0.1)
+                or (direction == "up" and dy < -0.1)
+                or (direction == "down" and dy > 0.1)
+            if eligible then
+                local distance = math.abs(dx) + math.abs(dy)
+                if not best_distance or distance < best_distance then
+                    best, best_index, best_distance = candidate, i, distance
+                end
+            end
+        end
     end
-    local moved = (idx ~= tonumber(self._shop_focus_index))
-    self._shop_focus_index = idx
-    local target = targets[idx]
-    self:sync_shop_gamepad_tooltips(target)
-    -- Only an "offer" target owns a node; a voucher or booster slot is a panel rect.
-    if moved then self:announce_focus_move(target and target.node) end
-    return target
+
+    if not best then return nil end
+    self._shop_focus_index = best_index
+    self:sync_shop_gamepad_tooltips(best)
+    self:announce_focus_move(best.node)
+    return best
 end
 
 function Game:joker_gamepad_focus_at(idx)
@@ -16608,7 +16655,20 @@ end
 
 function Game:gamepad_shop_buy()
     local target = self:get_shop_gamepad_focus()
-    if not target or not target.node then return false end
+    if not target then return false end
+    if target.kind == "control" then
+        if target.action == "continue" then
+            self:continue_from_shop()
+            return true
+        end
+        if target.action == "reroll" then
+            local ok = self:reroll_shop_offers()
+            if ok then self:sync_shop_gamepad_focus() end
+            return ok == true
+        end
+        return false
+    end
+    if not target.node then return false end
     local ctx = self:resolve_drag_context(target.node)
     if not ctx then return false end
     local zones = self:get_drag_zones_for_context(ctx)
@@ -17088,7 +17148,7 @@ function Game:_dpad_horizontal_step(dir, sweep)
             end
             return
         end
-        self:shop_gamepad_move(dir)
+        self:shop_gamepad_move_direction(dir < 0 and "left" or "right")
         return
     end
 
