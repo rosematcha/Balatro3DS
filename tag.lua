@@ -247,10 +247,12 @@ function Tag:apply(context)
         end
         return true
     elseif self.type == "topup" then
-        if G and G.joker_has_room_for_new and G.add_joker_by_def and G.random_joker_def_id_by_rarity then
+        if G and G.joker_has_room_for_new and G.add_joker_by_def
+            and G._pick_joker_id_shop_rarity_distribution then
             for _ = 1, 2 do
                 if not G:joker_has_room_for_new() then break end
-                local id = G:random_joker_def_id_by_rarity(1, "buffoon")
+                local id = G:_pick_joker_id_shop_rarity_distribution(
+                    function() return 1 end, "top", nil, 1, false)
                 if not id then break end
                 G:add_joker_by_def(id)
             end

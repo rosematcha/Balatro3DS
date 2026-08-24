@@ -196,7 +196,7 @@ local function copy_joker_runtime_state(dst, src)
         def = true, params = true, effect_impl = true,
         T = true, VT = true, velocity = true, drag = true, hovering = true,
         _hover_last = true, _touch_state = true, children = true, parent = true,
-        front_quads = true, back_quads = true, sprite_batch = true,
+        front_quads = true, back_quads = true, sprite_batch = true, _sort_id = true,
     }
     for k, v in pairs(src) do
         if not skip[k] and type(v) ~= "function" then
@@ -458,8 +458,11 @@ local SPECIAL = {
             local deck = (ctx and ctx.deck) or (G and G.deck)
             if not (deck and deck.cards) then return end
             -- Stone cards are rankless and suitless (reference/Balatro/card.lua:2580-2589).
+            local front = G:_random_reference_playing_card_front("marb_fr")
             table.insert(deck.cards, {
                 enhancement = "stone",
+                _stone_rank = front.rank,
+                _stone_suit = front.suit,
             })
             if G and G.notify_cards_added_to_deck then
                 G:notify_cards_added_to_deck(1)
@@ -748,13 +751,16 @@ local SPECIAL = {
         apply_effect = function(_, ctx)
             local hand = G and G.hand
             if not hand or not hand.add_card then return end
-            local suits = { "Hearts", "Clubs", "Diamonds", "Spades" }
-            local seals = { "gold", "red", "blue", "purple" }
+            local front = G:_random_reference_playing_card_front("cert_fr")
+            local seal_poll = G:random("certsl")
+            local seal = seal_poll > 0.75 and "red"
+                or seal_poll > 0.5 and "blue"
+                or seal_poll > 0.25 and "gold" or "purple"
             local cd = {
-                rank = G:random("cert_fr", 2, 14),
-                suit = suits[G:random("cert_fr", 1, #suits)],
+                rank = front.rank,
+                suit = front.suit,
                 enhancement = nil,
-                seal = seals[G:random("certsl", 1, #seals)],
+                seal = seal,
             }
             hand:add_card(cd, true)
             if G.notify_cards_added_to_deck then
@@ -805,7 +811,7 @@ local SPECIAL = {
             if not G:do_random(1, odds, 1, "8ball") then return end
             if not G or not G.can_add_consumable or not G.add_consumable or not G.random_consumable_id_of_kind then return end
             if not G:can_add_consumable() then return end
-            local tid = G:random_consumable_id_of_kind("tarot", nil, "8ball")
+            local tid = G:random_consumable_id_of_kind("tarot", nil, "8ba")
             if tid then
                 G:add_consumable(tid)
                 mark_effect_applied(ctx)
@@ -816,9 +822,10 @@ local SPECIAL = {
     j_riff_raff = {
         matches_trigger = function(_, e) return e == "on_blind_selected" end,
         apply_effect = function(_, ctx)
-            if not (G and G.add_joker_by_def and G.random_joker_def_id_by_rarity) then return end
+            if not (G and G.add_joker_by_def and G._pick_joker_id_shop_rarity_distribution) then return end
             for _ = 1, 2 do
-                local id = G:random_joker_def_id_by_rarity(1, "riff_raff")
+                local id = G:_pick_joker_id_shop_rarity_distribution(
+                    function() return 1 end, "rif", nil, 1, false)
                 if not id then break end
                 if G:add_joker_by_def(id) then
                     mark_effect_applied(ctx)
@@ -1008,9 +1015,9 @@ local SPECIAL = {
             if ctx.event_name == "card_played" and is_suit(ctx.suit, j.random_suit) then
                 mul_mult(ctx, 1.5)
             elseif ctx.event_name == "on_round_end" then
-                local suits = { "Hearts", "Clubs", "Diamonds", "Spades" }
                 if G and G.set_joker_shared_picks then
-                    G:set_joker_shared_picks("j_ancient_joker", { random_suit = suits[G:random("anc", 1, #suits)] })
+                    local picks = G:roll_joker_shared_picks("j_ancient_joker")
+                    if picks then G:set_joker_shared_picks("j_ancient_joker", picks) end
                 end
                 mark_effect_applied(ctx)
             end
@@ -1345,7 +1352,7 @@ local SPECIAL = {
             if hand:destroy_card_node(node) then
                 -- `destroy_card_node` already played the dissolve; the spectral arriving in
                 -- its place is the second half of the trade.
-                local tid = G:random_consumable_id_of_kind("spectral", nil, "sixth_sense")
+                local tid = G:random_consumable_id_of_kind("spectral", nil, "sixth")
                 if tid then
                     G:add_consumable(tid)
                     mark_created_item(ctx)
@@ -1493,7 +1500,7 @@ local SPECIAL = {
             if has_hand_type(ctx, "Straight") then 
                 for _, card in ipairs(cards) do
                     if card.card_data.rank == 14 then
-                        local tid = G:random_consumable_id_of_kind("tarot", nil, "superposition")
+                        local tid = G:random_consumable_id_of_kind("tarot", nil, "sup")
                         if tid then
                             G:add_consumable(tid)
                             mark_created_item(ctx)
@@ -1527,8 +1534,9 @@ local SPECIAL = {
         matches_trigger = function(_, e) return e == "on_booster_open" end,
         apply_effect = function(j, ctx)
             if ctx.event_name ~= "on_booster_open" then return end
-            if G:do_random(1, j.config and j.config.extra or 2, 1, "cartomancer") then
-                local tid = G:random_consumable_id_of_kind("tarot", nil, "hallucination")
+            if G:do_random(1, j.config and j.config.extra or 2, 1,
+                "halu" .. tostring(tonumber(G.ante) or 1)) then
+                local tid = G:random_consumable_id_of_kind("tarot", nil, "hal")
                 if tid then
                     G:add_consumable(tid)
                     mark_created_item(ctx)
@@ -1570,7 +1578,7 @@ local SPECIAL = {
         matches_trigger = function(_, e) return e == "on_hand_scored" end,
         apply_effect = function(_,ctx)
             if G and G.money and G.money <= 4 then
-                local tid = G:random_consumable_id_of_kind("tarot", nil, "vagabond")
+                local tid = G:random_consumable_id_of_kind("tarot", nil, "vag")
                 if tid then
                     G:add_consumable(tid)
                     mark_created_item(ctx)
@@ -1704,7 +1712,7 @@ local SPECIAL = {
             if ctx.event_name == "on_hand_scored" then
                 local hand = "Straight Flush"
                 if ctx.hand_type == hand then
-                    local tid = G:random_consumable_id_of_kind("spectral", nil, "seance")
+                    local tid = G:random_consumable_id_of_kind("spectral", nil, "sea")
                     if tid then
                         G:add_consumable(tid)
                         mark_created_item(ctx)
@@ -1818,7 +1826,7 @@ local SPECIAL = {
     j_cartomancer = {
         matches_trigger = function(_, e) return e == "on_blind_selected" end,
         apply_effect = function(_, ctx)
-            local tid = G:random_consumable_id_of_kind("tarot", nil, "cartomancer")
+            local tid = G:random_consumable_id_of_kind("tarot", nil, "car")
             if tid and G:add_consumable(tid) then
                 mark_created_item(ctx)
             end

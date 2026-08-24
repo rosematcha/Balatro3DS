@@ -71,6 +71,24 @@ suite.test("ALEEB123 reproduces the reference first shop and opening deal", func
     end
 end)
 
+suite.test("ALEEB123 reproduces reference gameplay creation streams", function()
+    local game = bootstrap.new_game("ALEEB123")
+    local certificate = game:_random_reference_playing_card_front("cert_fr")
+    T.assert_eq(certificate.suit, "Clubs")
+    T.assert_eq(certificate.rank, 12)
+    T.assert_near(game:random("certsl"), 0.38929641180815, 1e-14)
+
+    game = bootstrap.new_game("ALEEB123")
+    T.assert_eq(game:random_consumable_id_of_kind("tarot", nil, "car"), "tarot_world")
+    T.assert_eq(game:_pick_joker_id_shop_rarity_distribution(
+        function() return 1 end, "wra", nil, 3, false), "j_dna")
+
+    game = bootstrap.new_game("ALEEB123")
+    local cards = { 1, 2, 3, 4, 5, 6, 7, 8 }
+    game:pseudoshuffle(cards, "immolate")
+    T.assert_eq(table.concat(cards, ","), "3,1,6,5,8,4,2,7")
+end)
+
 suite.test("undiscovered tag requirements stay out of seeded pools", function()
     local game = bootstrap.new_game("ALEEB123")
     game:initialize_run_loop()

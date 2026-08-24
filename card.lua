@@ -1394,7 +1394,7 @@ function Card:do_seal(ctx)
             return
         end
         if not G:can_add_consumable() then return end
-        local tid = G:random_non_fool_tarot_id("fool")
+        local tid = G:random_consumable_id_of_kind("tarot", nil, "8ba")
         if not tid then return end
         -- As above (`card.lua:2266`).
         if G:add_consumable(tid) and Sfx and Sfx.play then

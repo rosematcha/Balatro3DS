@@ -191,14 +191,13 @@ function Deck:size()
     return #self.cards
 end
 
---- Insert a copy of `card_data` at a random position in the draw pile (1 .. #cards+1).
+--- Return a card to the draw area. The next reference shuffle restores creation order before
+--- shuffling, so spending a separate random draw on the temporary insertion point is incorrect.
 ---@param card_data table|nil
 function Deck:insert_random(card_data)
     local c = Deck.copy_card_data(card_data)
     if not c then return end
-    local n = #self.cards
-    local pos = self.game and self.game:random("deck", 1, n + 1) or math.random(1, n + 1)
-    table.insert(self.cards, pos, c)
+    self.cards[#self.cards + 1] = c
 end
 
 function Deck:empty()
