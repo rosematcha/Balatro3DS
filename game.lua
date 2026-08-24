@@ -52,6 +52,46 @@ Game.ROUND_WIN_LINE_DELAY = ROUND_WIN_LINE_DELAY
 --- row moves down by exactly what the hand moved up, which keeps the overlap where it already
 --- was rather than merely reducing the growth. A selected card's pip band ends up 5 px under
 --- the row - the same 5 px as before either change.
+--- The settings sliders, one table each instead of four near-identical copies of the same
+--- rect/drag/getter/setter quartet. `kind` doubles as the focus-target kind and the key the
+--- laid-out rect is stored under in `_pause_slider_rects`.
+local PAUSE_SLIDERS = {
+    { kind = "master_volume", label = "Master Volume", get = "get_master_volume", set = "set_master_volume" },
+    { kind = "music_volume", label = "Music Volume", get = "get_music_volume", set = "set_music_volume" },
+    { kind = "sfx_volume", label = "SFX Volume", get = "get_sfx_volume", set = "set_sfx_volume" },
+    { kind = "screenshake", label = "Screenshake", get = "get_screenshake_percent", set = "set_screenshake_percent" },
+}
+local PAUSE_SLIDER_BY_KIND = {}
+for _, def in ipairs(PAUSE_SLIDERS) do PAUSE_SLIDER_BY_KIND[def.kind] = def end
+
+--- Touch quantum, in slider units. The bottom screen is resistive and its samples wander by a
+--- pixel or two while a finger rests still, and 100 units over a ~230 px track is finer than
+--- that noise -- so an untouched finger walked the number up and down on its own. Two units is
+--- ~4.6 px, comfortably coarser than the jitter and still fine enough to feel continuous.
+--- The D-pad path is exact and deliberately does not quantise.
+local SLIDER_TOUCH_STEP = 2
+--- Within this many units of an end, snap to it. 0 and 100 are the two values anyone actually
+--- aims for, and landing on 98 because the track ran out under your finger is the whole
+--- complaint about sliders on a small screen.
+local SLIDER_END_SNAP = 4
+--- Detent tick spacing. A cue on every step would be the machine gun `play_focus_cue` already
+--- refuses to be; every tenth unit reads as notches under the finger instead.
+local SLIDER_TICK_STEP = 10
+--- D-pad hold: nothing repeats before this, so a tap is exactly one unit.
+local SLIDER_HOLD_DELAY = 0.25
+--- Reference `controller.lua:1352` ramps a held slider by `dt * held * 0.6` of the range per
+--- frame -- an acceleration proportional to how long the direction has been down, rather than
+--- a fixed repeat. Same shape here, steepened: the reference's own constant needs about 2.6 s
+--- of holding to cross 0-100, and this port's sliders are a 240 px screen away from the
+--- player rather than a monitor. At these numbers a full sweep takes ~1.3 s and the first
+--- moments after the delay still move about half a unit per frame, so fine adjustment by
+--- holding briefly is still possible.
+local SLIDER_HOLD_RATE = 120
+local SLIDER_HOLD_RATE_MAX = 250
+--- Quiet time after a gesture before the settings file is written. See
+--- `Game:_update_pause_slider_flush`.
+local SLIDER_FLUSH_DELAY = 0.4
+
 local BOTTOM_INVENTORY_Y = 2
 local RUN_SAVE_DIR = "sdmc"
 local PROFILE_COUNT = 3
@@ -176,10 +216,7 @@ function Game:init(seed)
     self._pause_settings_rect = nil
     self._pause_show_settings = false
     self._pause_speed_rects = {}
-    self._pause_music_slider_rect = nil
-    self._pause_music_slider_drag = false
-    self._pause_sfx_slider_rect = nil
-    self._pause_sfx_slider_drag = false
+    self:_clear_pause_sliders()
     -- D-pad card cursor and gamepad focus layers (hand / jokers / consumables)
     self._dpad_cursor_index = nil
     self._gamepad_focus_layer = "hand"
@@ -2765,10 +2802,7 @@ function Game:enter_pause_menu()
     self._pause_controls_open_rect = nil
     self._pause_controls_reset_rect = nil
     self._pause_speed_rects = {}
-    self._pause_music_slider_rect = nil
-    self._pause_music_slider_drag = false
-    self._pause_sfx_slider_rect = nil
-    self._pause_sfx_slider_drag = false
+    self:_clear_pause_sliders()
     self._pause_reduced_motion_rect = nil
     self._pause_tilt_rect = nil
     self._pause_joker_display_rect = nil
@@ -2899,17 +2933,10 @@ function Game:build_pause_focus_targets()
         if self._pause_settings_tab == "audio" then
             -- Left/right steps the focused slider's value instead of moving focus
             -- (`handle_gamepad_pause`), so the pad reaches them like a touch drag would.
-            if self._pause_master_slider_rect then
-                targets[#targets + 1] = { kind = "master_volume", rect = self._pause_master_slider_rect }
-            end
-            if self._pause_music_slider_rect then
-                targets[#targets + 1] = { kind = "music_volume", rect = self._pause_music_slider_rect }
-            end
-            if self._pause_sfx_slider_rect then
-                targets[#targets + 1] = { kind = "sfx_volume", rect = self._pause_sfx_slider_rect }
-            end
-            if self._pause_screenshake_slider_rect then
-                targets[#targets + 1] = { kind = "screenshake", rect = self._pause_screenshake_slider_rect }
+            local rects = self._pause_slider_rects or {}
+            for _, def in ipairs(PAUSE_SLIDERS) do
+                local r = rects[def.kind]
+                if r then targets[#targets + 1] = { kind = def.kind, rect = r, slider = def } end
             end
             if self._pause_back_rect then
                 targets[#targets + 1] = { kind = "back", rect = self._pause_back_rect }
@@ -2969,6 +2996,9 @@ end
 function Game:pause_gamepad_move(delta)
     local targets = self:build_pause_focus_targets()
     if #targets == 0 then return nil end
+    -- Moving focus ends any slider ramp: a direction still held from the row above must not
+    -- carry its acceleration into whatever is focused now.
+    self:_reset_pause_slider_hold()
     delta = math.floor(tonumber(delta) or 0)
     local idx = tonumber(self._pause_focus_index) or 1
     idx = idx + delta
@@ -3172,10 +3202,7 @@ function Game:exit_pause_menu()
     self._pause_controls_open_rect = nil
     self._pause_controls_reset_rect = nil
     self._pause_speed_rects = {}
-    self._pause_music_slider_rect = nil
-    self._pause_music_slider_drag = false
-    self._pause_sfx_slider_rect = nil
-    self._pause_sfx_slider_drag = false
+    self:_clear_pause_sliders()
     self:set_state(resume)
     return true
 end
@@ -3933,73 +3960,251 @@ function Game:apply_music_volume()
     end
 end
 
-function Game:_volume_from_slider_x(r, x)
+function Game:_clear_pause_sliders()
+    self._pause_slider_rects = {}
+    self._pause_slider_drag = nil
+    self._pause_slider_grab_dx = 0
+    self._pause_slider_dirty = false
+    self._pause_slider_hold_dir = 0
+    self._pause_slider_hold_time = 0
+    self._pause_slider_hold_accum = 0
+    self._pause_slider_flush_in = nil
+end
+
+function Game:_pause_slider_rect(kind)
+    return (self._pause_slider_rects or {})[kind]
+end
+
+function Game:get_pause_slider_value(kind)
+    local def = PAUSE_SLIDER_BY_KIND[kind]
+    if not def then return nil end
+    return self[def.get](self)
+end
+
+--- Apply a slider value. `opts.defer_save` holds the SD write until the gesture ends, because
+--- an 8 KB save is 36 ms on hardware and a drag would otherwise stutter once a frame.
+---@param kind string
+---@param value number
+---@param opts table|nil `{ defer_save = true }`
+---@return boolean changed
+function Game:set_pause_slider_value(kind, value, opts)
+    local def = PAUSE_SLIDER_BY_KIND[kind]
+    if not def then return false end
+    value = math.max(0, math.min(100, math.floor((tonumber(value) or 0) + 0.5)))
+    local before = self[def.get](self)
+    if value == before then return false end
+    local defer = opts and opts.defer_save
+    self[def.set](self, value, { skip_save = defer })
+    if defer then self._pause_slider_dirty = true end
+    self:_pause_slider_feedback(kind, before, value)
+    return true
+end
+
+--- Feedback for a value that just moved: a soft tick as the knob crosses each detent, and for
+--- screenshake a token shake, since a number is not what that setting means. Both are gated on
+--- the detent so a fast drag does not fire twenty cues in a second.
+function Game:_pause_slider_feedback(kind, before, after)
+    local crossed = math.floor(after / SLIDER_TICK_STEP) ~= math.floor(before / SLIDER_TICK_STEP)
+    if not crossed and after ~= 0 and after ~= 100 then return end
+    if Sfx and Sfx.play then
+        -- The SFX slider tries itself on: `Sfx.play` reads the setting at play time, so the
+        -- tick is already a preview of the level being chosen.
+        Sfx.play("paper1", 1.1 + (after / 100) * 0.2, 0.3)
+    end
+    if kind == "screenshake" and after > 0 and self.shake then
+        self:shake(0.6 * (after / 100))
+    end
+end
+
+--- Slider value under a touch x, in slider units, quantised against touchscreen jitter.
+---@param r table|nil the laid-out slider rect
+---@param x number
+---@return number|nil
+function Game:_slider_value_from_x(r, x)
     if type(r) ~= "table" then return nil end
-    local t = (tonumber(x) - r.track_x) / r.track_w
+    local t = ((tonumber(x) or 0) - r.track_x) / r.track_w
     t = math.max(0, math.min(1, t))
-    return math.floor(t * 100 + 0.5)
+    local v = t * 100
+    v = math.floor(v / SLIDER_TOUCH_STEP + 0.5) * SLIDER_TOUCH_STEP
+    if v <= SLIDER_END_SNAP then v = 0 elseif v >= 100 - SLIDER_END_SNAP then v = 100 end
+    return v
 end
 
-function Game:_music_volume_from_slider_x(x)
-    return self:_volume_from_slider_x(self._pause_music_slider_rect, x)
-end
-
-function Game:_master_volume_from_slider_x(x)
-    return self:_volume_from_slider_x(self._pause_master_slider_rect, x)
-end
-
-function Game:_sfx_volume_from_slider_x(x)
-    return self:_volume_from_slider_x(self._pause_sfx_slider_rect, x)
-end
-
-function Game:_screenshake_from_slider_x(x)
-    return self:_volume_from_slider_x(self._pause_screenshake_slider_rect, x)
-end
-
---- Left/right on a focused volume slider, for the pad and the no-touchscreen case. Each press
---- is a discrete step and saves immediately, unlike a touch drag, which defers the SD write
---- until release (`end_pause_slider_drag`).
----@param delta number -1 or 1
-function Game:adjust_pause_focus_slider(delta)
-    local targets = self:build_pause_focus_targets()
-    local idx = math.max(1, math.min(#targets, tonumber(self._pause_focus_index) or 1))
-    local t = targets[idx]
-    if not t then return false end
-    delta = (tonumber(delta) or 0) > 0 and 1 or -1
-    local step = 5 * delta
-    if t.kind == "master_volume" then
-        self:set_master_volume(self:get_master_volume() + step)
-        return true
-    elseif t.kind == "music_volume" then
-        self:set_music_volume(self:get_music_volume() + step)
-        return true
-    elseif t.kind == "sfx_volume" then
-        self:set_sfx_volume(self:get_sfx_volume() + step)
-        return true
-    elseif t.kind == "screenshake" then
-        self:set_screenshake_percent(self:get_screenshake_percent() + step)
-        return true
+--- Begin a touch drag if `x, y` landed on a slider. Pressing the knob itself keeps the grab
+--- offset so the value does not jump out from under the finger; pressing the bare track jumps
+--- the knob to the finger, which is what a tap on a track is asking for.
+---@return boolean handled
+function Game:begin_pause_slider_drag(x, y)
+    for _, def in ipairs(PAUSE_SLIDERS) do
+        local r = self:_pause_slider_rect(def.kind)
+        if r and self:_point_in_rect_simple(x, y, r) then
+            local knob_x = r.track_x + (self[def.get](self) / 100) * r.track_w
+            self._pause_slider_drag = def.kind
+            -- `_pause_slider_dirty` deliberately survives: it means "there is an unsaved
+            -- change", not "this gesture changed something", and clearing it here would lose
+            -- a pending write from the row the player just left.
+            -- Focus follows the finger, so a pad press after a touch continues from the
+            -- slider that was just being dragged rather than from wherever focus was left.
+            self:focus_pause_target(def.kind)
+            if math.abs(x - knob_x) <= r.grab_r then
+                self._pause_slider_grab_dx = knob_x - x
+            else
+                self._pause_slider_grab_dx = 0
+                local v = self:_slider_value_from_x(r, x)
+                if v then self:set_pause_slider_value(def.kind, v, { defer_save = true }) end
+            end
+            return true
+        end
     end
     return false
 end
 
+--- Track an in-flight touch drag. Only x matters: once the finger is down the drag is captured,
+--- so sliding off the track vertically -- which is most of what a thumb does on a 240 px
+--- screen -- keeps adjusting instead of silently dropping the gesture.
+---@return boolean handled
+function Game:update_pause_slider_drag(x)
+    local kind = self._pause_slider_drag
+    if not kind then return false end
+    local r = self:_pause_slider_rect(kind)
+    if not r then return false end
+    local v = self:_slider_value_from_x(r, x + (self._pause_slider_grab_dx or 0))
+    if v then self:set_pause_slider_value(kind, v, { defer_save = true }) end
+    return true
+end
 
---- Leave the general settings tab: flush the deferred slider save and drop the rects,
---- so a touchrelease lost to a HOME-menu suspend cannot keep dragging against stale
---- coordinates on another screen.
-function Game:end_pause_slider_drag()
-    if self._pause_master_slider_drag or self._pause_music_slider_drag or self._pause_sfx_slider_drag
-        or self._pause_screenshake_slider_drag then
+--- Point `_pause_focus_index` at a focus target by kind, if it is on screen.
+function Game:focus_pause_target(kind)
+    for i, t in ipairs(self:build_pause_focus_targets()) do
+        if t.kind == kind then
+            self._pause_focus_index = i
+            return true
+        end
+    end
+    return false
+end
+
+--- The focused slider, or nil when focus is on something else.
+function Game:focused_pause_slider_kind()
+    local targets = self:build_pause_focus_targets()
+    local t = targets[math.max(1, math.min(#targets, tonumber(self._pause_focus_index) or 1))]
+    return t and PAUSE_SLIDER_BY_KIND[t.kind] and t.kind or nil
+end
+
+--- Left/right on a focused slider, for the pad and the no-touchscreen case. A tap is one unit,
+--- exactly as the reference's is (`controller.lua:1355`); holding is handled by
+--- `update_pause_slider_hold`, which is where the range actually gets crossed.
+---@param delta number -1 or 1
+function Game:adjust_pause_focus_slider(delta)
+    local kind = self:focused_pause_slider_kind()
+    if not kind then return false end
+    delta = (tonumber(delta) or 0) > 0 and 1 or -1
+    -- The press itself defers its save too: releasing the direction flushes once, rather than
+    -- every tap costing an SD write while the player hunts for a level.
+    self:set_pause_slider_value(kind, self:get_pause_slider_value(kind) + delta, { defer_save = true })
+    -- Re-arm the hold ramp from this press, so press-and-keep-holding is one continuous
+    -- gesture instead of a tap followed by a separate acceleration.
+    self._pause_slider_hold_dir = delta
+    self._pause_slider_hold_time = 0
+    self._pause_slider_hold_accum = 0
+    return true
+end
+
+--- Which way left/right is being held right now. Polled rather than latched for the same
+--- reason `_dpad_horizontal_dir` is: the settings panel is reachable from two states and a
+--- latch dropped by a state change would leave a slider running.
+---@return number -1, 0 or 1
+function Game:_pause_slider_held_dir()
+    local joysticks = love.joystick and love.joystick.getJoysticks and love.joystick.getJoysticks()
+    local joy = joysticks and joysticks[1]
+    if joy and joy.isGamepad and joy:isGamepad() then
+        if joy:isGamepadDown("dpleft") then return -1 end
+        if joy:isGamepadDown("dpright") then return 1 end
+    end
+    if love.keyboard and love.keyboard.isDown then
+        if love.keyboard.isDown("left") then return -1 end
+        if love.keyboard.isDown("right") then return 1 end
+    end
+    return 0
+end
+
+--- Ramp a held direction into the focused slider. Without this the pad needs a hundred presses
+--- to cross the range, which is the D-pad half of why these felt awful.
+---
+--- Called from `Game:update` ahead of the PAUSED early-out, because the pause menu is exactly
+--- where this runs.
+---@param dt number
+function Game:update_pause_slider_hold(dt)
+    dt = tonumber(dt) or 0
+    local kind = (self._pause_show_settings and self._pause_settings_tab == "audio")
+        and self:focused_pause_slider_kind() or nil
+    local dir = kind and not self._pause_slider_drag and self:_pause_slider_held_dir() or 0
+    if dir == 0 or dir ~= self._pause_slider_hold_dir then
+        self:_reset_pause_slider_hold()
+    else
+        self._pause_slider_hold_time = (self._pause_slider_hold_time or 0) + dt
+        local held = self._pause_slider_hold_time
+        if held >= SLIDER_HOLD_DELAY then
+            local rate = math.min(SLIDER_HOLD_RATE_MAX, SLIDER_HOLD_RATE * held)
+            self._pause_slider_hold_accum = (self._pause_slider_hold_accum or 0) + rate * dt
+            local whole = math.floor(self._pause_slider_hold_accum)
+            if whole >= 1 then
+                self._pause_slider_hold_accum = self._pause_slider_hold_accum - whole
+                self:set_pause_slider_value(kind, self:get_pause_slider_value(kind) + dir * whole,
+                    { defer_save = true })
+            end
+        end
+    end
+    self:_update_pause_slider_flush(dt)
+end
+
+function Game:_reset_pause_slider_hold()
+    self._pause_slider_hold_dir = 0
+    self._pause_slider_hold_time = 0
+    self._pause_slider_hold_accum = 0
+end
+
+--- Deferred SD write. A settings save is 36 ms on hardware -- a frame and a half -- so it is
+--- never taken while a gesture could still be running: releasing the direction only arms the
+--- write, and tapping again before it lands cancels it. `end_pause_slider_drag` still forces
+--- the flush when the panel closes, so nothing is lost by waiting.
+---@param dt number
+function Game:_update_pause_slider_flush(dt)
+    if not self._pause_slider_dirty then
+        self._pause_slider_flush_in = nil
+        return
+    end
+    if self._pause_slider_drag or (self._pause_slider_hold_dir or 0) ~= 0 then
+        self._pause_slider_flush_in = nil
+        return
+    end
+    self._pause_slider_flush_in = (self._pause_slider_flush_in or SLIDER_FLUSH_DELAY) - dt
+    if self._pause_slider_flush_in <= 0 then
+        self._pause_slider_flush_in = nil
+        self._pause_slider_dirty = false
         self:save_settings()
     end
-    self._pause_master_slider_drag = false
-    self._pause_music_slider_drag = false
-    self._pause_sfx_slider_drag = false
-    self._pause_screenshake_slider_drag = false
-    self._pause_master_slider_rect = nil
-    self._pause_music_slider_rect = nil
-    self._pause_sfx_slider_rect = nil
-    self._pause_screenshake_slider_rect = nil
+end
+
+--- Finger up. The rects stay -- the panel is still on screen -- and the write is left to
+--- `_update_pause_slider_flush`, so lifting off to re-grab the knob does not cost an SD write
+--- per touch.
+---@return boolean handled
+function Game:finish_pause_slider_drag()
+    if not self._pause_slider_drag then return false end
+    self._pause_slider_drag = nil
+    self._pause_slider_grab_dx = 0
+    return true
+end
+
+--- End whatever slider gesture is in flight: flush the deferred save and drop the rects, so a
+--- touchrelease lost to a HOME-menu suspend cannot keep dragging against stale coordinates on
+--- another screen.
+function Game:end_pause_slider_drag()
+    if self._pause_slider_dirty then
+        self:save_settings()
+    end
+    self:_clear_pause_sliders()
 end
 
 --- Open the settings panel from the main menu. The panel itself is the pause menu's, which
@@ -7543,36 +7748,73 @@ function Game:draw_bottom_pause()
         return false
     end
 
-    local slider_track_x = panel_x + 36
-    local slider_track_w = panel_w - 72
+    -- Slider geometry. The track is inset far enough that the knob at either end still has its
+    -- whole body on the panel, and the hit band covers the label as well as the track: on a
+    -- 320x240 resistive screen a 24 px band with gaps between rows meant most thumb presses
+    -- landed on nothing at all, which is the touch half of why these felt awful.
+    local slider_track_x = panel_x + 30
+    local slider_track_w = panel_w - 60
     local slider_knob_r = 7
-    local function draw_volume_slider(label, label_y, track_y, vol, focused)
-        love.graphics.setColor(self.C.GREY)
+    local slider_row_h = 34
+    -- Extra slack around the knob for "did they grab the knob or the track" (see
+    -- `begin_pause_slider_drag`); a finger is far wider than the knob it is aiming at.
+    local slider_grab_r = slider_knob_r + 7
+    local slider_row_pitch = 42
+    --- Lay every slider row out before anything asks what is focused. `build_pause_focus_targets`
+    --- reads these rects, so populating them mid-draw would have the first slider drawn against
+    --- a focus list that does not contain it yet.
+    local function layout_volume_sliders(first_row_y)
+        local rects = {}
+        for i, def in ipairs(PAUSE_SLIDERS) do
+            local row_y = first_row_y + (i - 1) * slider_row_pitch
+            rects[def.kind] = {
+                x = slider_track_x - slider_grab_r,
+                y = row_y,
+                w = slider_track_w + slider_grab_r * 2,
+                h = slider_row_h,
+                track_x = slider_track_x,
+                track_w = slider_track_w,
+                track_y = row_y + 22,
+                label_y = row_y + 3,
+                grab_r = slider_grab_r,
+            }
+        end
+        self._pause_slider_rects = rects
+    end
+    local function draw_volume_slider(kind, label, vol, focused)
+        local r = self._pause_slider_rects[kind]
+        if not r then return end
+        local track_y, label_y = r.track_y, r.label_y
+        local dragging = self._pause_slider_drag == kind
+        local active = focused or dragging
+        love.graphics.setColor(active and (self.C.MONEY or self.C.ORANGE) or self.C.GREY)
         love.graphics.setFont(self.FONTS.PIXEL.SMALL)
         love.graphics.printf(string.format("%s (%d)", label, math.floor(vol + 0.5)),
             panel_x, label_y, panel_w, "center")
         local knob_x = slider_track_x + (vol / 100) * slider_track_w
         local prev_lw = love.graphics.getLineWidth()
-        love.graphics.setColor(self.C.GREY)
         love.graphics.setLineWidth(2)
+        -- Unfilled remainder, then the filled run: the reference's slider is a filled bar
+        -- (`UI_definitions.lua:1883`) rather than a bare rule, and the fill is what makes the
+        -- setting readable at a glance on a 240p screen.
+        love.graphics.setColor(self.C.GREY)
         love.graphics.line(slider_track_x, track_y, slider_track_x + slider_track_w, track_y)
-        love.graphics.setColor(focused and (self.C.MONEY or self.C.ORANGE) or self.C.WHITE)
-        love.graphics.circle("fill", knob_x, track_y, focused and (slider_knob_r + 2) or slider_knob_r)
-        if focused then
-            love.graphics.setColor(1, 1, 1, 1)
+        if vol > 0 then
+            love.graphics.setColor(active and (self.C.MONEY or self.C.ORANGE) or self.C.WHITE)
+            love.graphics.setLineWidth(4)
+            love.graphics.line(slider_track_x, track_y, knob_x, track_y)
             love.graphics.setLineWidth(2)
-            love.graphics.circle("line", knob_x, track_y, slider_knob_r + 2)
+        end
+        -- The knob swells while it is being dragged, not only while the pad has it, so a finger
+        -- covering it still leaves a visible edge.
+        local knob_r = slider_knob_r + (dragging and 3 or (focused and 2 or 0))
+        love.graphics.setColor(active and (self.C.MONEY or self.C.ORANGE) or self.C.WHITE)
+        love.graphics.circle("fill", knob_x, track_y, knob_r)
+        if active then
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.circle("line", knob_x, track_y, knob_r)
         end
         love.graphics.setLineWidth(prev_lw)
-        return {
-            x = slider_track_x - slider_knob_r,
-            y = track_y - 12,
-            w = slider_track_w + slider_knob_r * 2,
-            h = 24,
-            track_x = slider_track_x,
-            track_w = slider_track_w,
-            track_y = track_y,
-        }
     end
 
     if self._pause_show_settings then
@@ -7737,27 +7979,23 @@ function Game:draw_bottom_pause()
             draw_btn(self._pause_back_rect, "Back", self.C.MULT, is_pause_focused("back"))
         elseif self._pause_settings_tab == "audio" then
             -- ===== SETTINGS AUDIO TAB =====
-            love.graphics.printf("Audio", panel_x, panel_y + 10, panel_w, "center")
+            love.graphics.printf("Audio", panel_x, panel_y + 8, panel_w, "center")
+            love.graphics.setColor(self.C.GREY)
+            love.graphics.setFont(self.FONTS.PIXEL.SMALL)
+            love.graphics.printf("Drag, or hold left/right", panel_x, panel_y + 24, panel_w, "center")
 
-            self._pause_master_slider_rect =
-                draw_volume_slider("Master Volume", panel_y + 36, panel_y + 52, self:get_master_volume(),
-                    is_pause_focused("master_volume"))
-            self._pause_music_slider_rect =
-                draw_volume_slider("Music Volume", panel_y + 68, panel_y + 84, self:get_music_volume(),
-                    is_pause_focused("music_volume"))
-            self._pause_sfx_slider_rect =
-                draw_volume_slider("SFX Volume", panel_y + 100, panel_y + 116, self:get_sfx_volume(),
-                    is_pause_focused("sfx_volume"))
-            -- Reference `UI_definitions.lua:2305`: screenshake is a 0-100 slider, alongside
-            -- the volumes, not a hidden constant.
-            self._pause_screenshake_slider_rect =
-                draw_volume_slider("Screenshake", panel_y + 132, panel_y + 148, self:get_screenshake_percent(),
-                    is_pause_focused("screenshake"))
+            -- Reference `UI_definitions.lua:2305,2328-2330`: screenshake is a 0-100 slider
+            -- alongside the volumes, not a hidden constant.
+            layout_volume_sliders(panel_y + 38)
+            for _, def in ipairs(PAUSE_SLIDERS) do
+                draw_volume_slider(def.kind, def.label, self[def.get](self),
+                    is_pause_focused(def.kind))
+            end
 
             local row_w = 140
             self._pause_back_rect = {
-                x = panel_x + math.floor((panel_w - row_w) * 0.5 + 0.5), y = panel_y + 216,
-                w = row_w, h = 18,
+                x = panel_x + math.floor((panel_w - row_w) * 0.5 + 0.5), y = panel_y + 208,
+                w = row_w, h = 22,
             }
             draw_btn(self._pause_back_rect, "Back", self.C.MULT, is_pause_focused("back"))
         else
@@ -8707,6 +8945,10 @@ function Game:update(dt, real_dt)
     if ScreenWipe.update(self, real_dt) then
         return
     end
+    -- Ahead of the PAUSED early-out: the settings panel is drawn while paused, so its held
+    -- D-pad ramp and deferred settings write would otherwise never tick. It is also reachable
+    -- over the main menu, where `update` runs normally.
+    self:update_pause_slider_hold(real_dt)
     if self.STATE == self.STATES.PAUSED then
         return
     end
@@ -14986,45 +15228,7 @@ function Game:handle_pause_settings_touch(x, y)
             return
         end
         if self._pause_settings_tab == "audio" then
-            local slider = self._pause_master_slider_rect
-            if slider and self:_point_in_rect_simple(x, y, slider) then
-                self._pause_master_slider_drag = true
-                self._pause_music_slider_drag = false
-                self._pause_sfx_slider_drag = false
-                self._pause_screenshake_slider_drag = false
-                local vol = self:_master_volume_from_slider_x(x)
-                if vol ~= nil then self:set_master_volume(vol, { skip_save = true }) end
-                return
-            end
-            slider = self._pause_music_slider_rect
-            if slider and self:_point_in_rect_simple(x, y, slider) then
-                self._pause_master_slider_drag = false
-                self._pause_music_slider_drag = true
-                self._pause_sfx_slider_drag = false
-                local vol = self:_music_volume_from_slider_x(x)
-                if vol ~= nil then self:set_music_volume(vol, { skip_save = true }) end
-                return
-            end
-            slider = self._pause_sfx_slider_rect
-            if slider and self:_point_in_rect_simple(x, y, slider) then
-                self._pause_master_slider_drag = false
-                self._pause_sfx_slider_drag = true
-                self._pause_music_slider_drag = false
-                self._pause_screenshake_slider_drag = false
-                local vol = self:_sfx_volume_from_slider_x(x)
-                if vol ~= nil then self:set_sfx_volume(vol, { skip_save = true }) end
-                return
-            end
-            slider = self._pause_screenshake_slider_rect
-            if slider and self:_point_in_rect_simple(x, y, slider) then
-                self._pause_master_slider_drag = false
-                self._pause_screenshake_slider_drag = true
-                self._pause_music_slider_drag = false
-                self._pause_sfx_slider_drag = false
-                local pct = self:_screenshake_from_slider_x(x)
-                if pct ~= nil then self:set_screenshake_percent(pct, { skip_save = true }) end
-                return
-            end
+            if self:begin_pause_slider_drag(x, y) then return end
             if self._pause_back_rect and self:_point_in_rect_simple(x, y, self._pause_back_rect) then
                 self:end_pause_slider_drag()
                 self._pause_settings_tab = "general"
@@ -15326,27 +15530,20 @@ function Game:touchmoved(id, x, y, dx, dy)
         CollectionUI.handle_touchmoved(self, id, x, y, dx, dy)
         return
     end
+    -- Settings opened from the main menu borrows the pause panel, so it has to borrow the rest
+    -- of the touch gesture too. Without this the menu-side sliders took the press and then
+    -- ignored every move, which is the single worst thing a slider can do.
+    if self._settings_over_menu and self.STATE == self.STATES.MENU then
+        self:update_pause_slider_drag(x)
+        return
+    end
     if self._deck_view_open then
         DeckViewUI.handle_touchmoved(self, id, x, y, dx, dy)
         return
     end
     if self._run_info_open then return end
     if self.STATE == self.STATES.PAUSED then
-        if self._pause_show_settings and self._pause_settings_tab ~= "controls" then
-            if self._pause_master_slider_drag then
-                local vol = self:_master_volume_from_slider_x(x)
-                if vol ~= nil then self:set_master_volume(vol, { skip_save = true }) end
-            elseif self._pause_music_slider_drag then
-                local vol = self:_music_volume_from_slider_x(x)
-                if vol ~= nil then self:set_music_volume(vol, { skip_save = true }) end
-            elseif self._pause_sfx_slider_drag then
-                local vol = self:_sfx_volume_from_slider_x(x)
-                if vol ~= nil then self:set_sfx_volume(vol, { skip_save = true }) end
-            elseif self._pause_screenshake_slider_drag then
-                local pct = self:_screenshake_from_slider_x(x)
-                if pct ~= nil then self:set_screenshake_percent(pct, { skip_save = true }) end
-            end
-        end
+        self:update_pause_slider_drag(x)
         return
     end
     if self.STATE == self.STATES.GAME_OVER or self.STATE == self.STATES.YOU_WIN then
@@ -15400,20 +15597,18 @@ function Game:touchreleased(id, x, y)
         CollectionUI.handle_touchreleased(self, id, x, y)
         return
     end
+    if self._settings_over_menu and self.STATE == self.STATES.MENU then
+        self:finish_pause_slider_drag()
+        self.dragging = nil
+        return
+    end
     if self._deck_view_open then
         DeckViewUI.handle_touchreleased(self, id, x, y)
         return
     end
     if self._run_info_open then return end
     if self.STATE == self.STATES.PAUSED then
-        if self._pause_master_slider_drag or self._pause_music_slider_drag or self._pause_sfx_slider_drag
-            or self._pause_screenshake_slider_drag then
-            self:save_settings()
-        end
-        self._pause_master_slider_drag = false
-        self._pause_music_slider_drag = false
-        self._pause_sfx_slider_drag = false
-        self._pause_screenshake_slider_drag = false
+        self:finish_pause_slider_drag()
         self.dragging = nil
         return
     end
