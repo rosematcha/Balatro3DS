@@ -2002,6 +2002,20 @@ local function unlock_all_decks_and_stakes(unlocks)
     return unlocks
 end
 
+--- Flag every gated Joker and tier-two Voucher as earned. Without this, an
+--- "unlock everything" profile still has empty `JOKER_UNLOCKS` / `VOUCHER_UNLOCKS`
+--- tables, so `check_unlock` / `check_voucher_unlocks` re-earn each one during play
+--- and push a milestone notification for something the player already has.
+local function unlock_all_jokers(joker_unlocks)
+    for id in pairs(JokerUnlocks.CONDITIONS) do joker_unlocks[id] = true end
+    return joker_unlocks
+end
+
+local function unlock_all_vouchers(voucher_unlocks)
+    for id in pairs(VoucherUnlocks.CONDITIONS) do voucher_unlocks[id] = true end
+    return voucher_unlocks
+end
+
 --- Mark every collection entry discovered. Decks come from unlocks; seals and
 --- editions are always visible, so both are skipped here.
 local function discover_all_entries(discovered)
@@ -2022,6 +2036,8 @@ function Game:unlock_everything()
         self:apply_unlocks(self:build_unlocks())
     end
     self:apply_unlocks(unlock_all_decks_and_stakes(self.unlocks))
+    self:apply_joker_unlocks(unlock_all_jokers(self:normalize_joker_unlocks(self.joker_unlocks)))
+    self:apply_voucher_unlocks(unlock_all_vouchers(self:normalize_voucher_unlocks(self.voucher_unlocks)))
     self:apply_discovered(discover_all_entries(self:normalize_discovered(self.Discovered)))
     self:save_settings()
     return true
@@ -2037,6 +2053,8 @@ function Game:unlock_everything_for_profile(profile_id)
     end
     local settings = self:peek_profile_settings(id) or self:default_settings()
     settings.UNLOCKS = unlock_all_decks_and_stakes(self:normalize_unlocks(settings.UNLOCKS))
+    settings.JOKER_UNLOCKS = unlock_all_jokers(self:normalize_joker_unlocks(settings.JOKER_UNLOCKS))
+    settings.VOUCHER_UNLOCKS = unlock_all_vouchers(self:normalize_voucher_unlocks(settings.VOUCHER_UNLOCKS))
     settings.DISCOVERED = discover_all_entries(self:normalize_discovered(settings.DISCOVERED))
     return self:write_profile_settings(id, settings)
 end

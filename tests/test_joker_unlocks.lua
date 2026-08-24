@@ -261,4 +261,27 @@ suite.test("the collection separates locked from merely unseen", function()
         "only Jokers have unlock conditions")
 end)
 
+--- The Konami cheat and the profile screen's Unlock All both call `unlock_everything`.
+--- Before this covered Jokers and Vouchers, a fully-unlocked profile still re-earned each
+--- one during play and fired a milestone notification for it.
+suite.test("unlocking everything silences future unlock notifications", function()
+    local g = fresh(6113)
+    g.voucher_unlocks = {}
+    g:unlock_everything()
+
+    for id in pairs(JokerUnlocks.CONDITIONS) do
+        T.assert_true(g:is_joker_unlocked(id), id .. " should be unlocked")
+    end
+    local VoucherUnlocks = require("voucher_unlocks")
+    for id in pairs(VoucherUnlocks.CONDITIONS) do
+        T.assert_true(g:is_voucher_unlocked(id), id .. " should be unlocked")
+    end
+
+    -- Nothing left to earn, so nothing left to announce.
+    g:add_career_stat("c_hands_played", 500)
+    g:add_career_stat("c_jokers_sold", 500)
+    T.assert_eq(#g:check_unlock("career_stat"), 0, "no Joker is earned twice")
+    T.assert_eq(#g:check_voucher_unlocks(), 0, "no Voucher is earned twice")
+end)
+
 return suite
