@@ -20,21 +20,64 @@ suite.test("the collection only lists playable decks", function()
     end
 end)
 
-suite.test("a collection card stays where it is dropped until the grid refreshes", function()
+suite.test("dragging a collection card reorders its row live", function()
     local g = bootstrap.new_game(5100)
-    local node = CollectionUI.CollectionStaticNode(10, 12, 71, 95, { id = "test" })
     g.STATE = g.STATES.PAUSED
     g._collection_over_run = true
     g._menu_sub_state = "collection_grid"
-    g._collection_nodes = { node }
 
-    g:touchpressed(1, 20, 22)
-    g:touchmoved(1, 140, 110, 120, 88)
-    g:touchreleased(1, 140, 110)
+    local m = CollectionUI.grid_metrics(5)
+    local nodes = {}
+    for i = 1, 5 do
+        local x, y = CollectionUI.slot_position(m, i, 5)
+        nodes[i] = CollectionUI.CollectionStaticNode(x, y, 71, 95, { id = "c" .. i })
+    end
+    g._collection_nodes = nodes
+    g._collection_page_count = 5
 
-    T.assert_eq(node.T.x, node.VT.x, "the dropped x coordinate becomes the resting target")
-    T.assert_eq(node.T.y, node.VT.y, "the dropped y coordinate becomes the resting target")
+    local first, third = nodes[1], nodes[3]
+    local x1 = CollectionUI.slot_position(m, 1, 5)
+    local x3 = CollectionUI.slot_position(m, 3, 5)
+
+    g:touchpressed(1, x1 + 5, m.start_y + 5)
+    g:touchmoved(1, x3 + 5, m.start_y + 5, x3 - x1, 0)
+
+    T.assert_eq(g._collection_nodes[3], first, "the dragged card takes the slot it is over")
+    T.assert_eq(g._collection_nodes[2], third, "the cards it passed shuffle back one place")
+    T.assert_eq(third.T.x, CollectionUI.slot_position(m, 2, 5),
+        "the displaced card is given its new slot as a target, not snapped to it")
+
+    g:touchreleased(1, x3 + 5, m.start_y + 5)
+    T.assert_eq(first.T.x, x3, "the released card springs into the slot it opened")
     T.assert_eq(g.dragging, nil, "the drag is released normally")
+end)
+
+suite.test("a collection card dragged off its row stays in that row", function()
+    local g = bootstrap.new_game(5101)
+    g.STATE = g.STATES.PAUSED
+    g._collection_over_run = true
+    g._menu_sub_state = "collection_grid"
+
+    local m = CollectionUI.grid_metrics(15)
+    local nodes = {}
+    for i = 1, 15 do
+        local x, y = CollectionUI.slot_position(m, i, 15)
+        nodes[i] = CollectionUI.CollectionStaticNode(x, y, 71, 95, { id = "c" .. i })
+    end
+    g._collection_nodes = nodes
+    g._collection_page_count = 15
+
+    -- Slot 7 is the middle of the second row. Dragging it down onto the third row must not
+    -- hand it over: the reference gives each row its own CardArea.
+    local node = nodes[7]
+    local x7, y7 = CollectionUI.slot_position(m, 7, 15)
+    local x13, y13 = CollectionUI.slot_position(m, 13, 15)
+    g:touchpressed(1, x7 + 5, y7 + 5)
+    g:touchmoved(1, x13 + 5, y13 + 5, x13 - x7, y13 - y7)
+    g:touchreleased(1, x13 + 5, y13 + 5)
+
+    T.assert_eq(g._collection_nodes[8], node, "it moved only within its own row")
+    T.assert_eq(node.T.y, y7, "and returns to that row's line")
 end)
 
 suite.test("a seal is undiscovered until a card carrying it is seen", function()

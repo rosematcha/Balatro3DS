@@ -388,6 +388,40 @@ function CollectionUI.slot_position(m, index_one_based, count_on_page)
     return x, y
 end
 
+--- First and last slot index of the row that `index` sits in.
+---
+--- The reference builds its collection out of one CardArea per row and never hands a card
+--- between them (`reference/Balatro/functions/UI_definitions.lua:3539`), so a card being
+--- dragged reorders inside its own row and springs back to it however far up or down the
+--- screen it is let go.
+---@return integer first, integer last
+local function row_span_for_index(m, index, count)
+    local row = math.floor((index - 1) / m.cols)
+    local first = row * m.cols + 1
+    local last = math.min(count, first + m.cols - 1)
+    return first, last
+end
+
+--- Slot in `index`'s row whose centre is nearest `x`.
+---@param m table grid metrics
+---@param count integer items on the page
+---@param index integer the dragged node's current slot
+---@param x number screen x of the dragged card's centre
+---@return integer slot
+function CollectionUI.slot_index_from_x(m, count, index, x)
+    local first, last = row_span_for_index(m, index, count)
+    local best_i, best_d = index, math.huge
+    for i = first, last do
+        local sx = CollectionUI.slot_position(m, i, count)
+        local d = math.abs(x - (sx + CARD_W * 0.5))
+        if d < best_d then
+            best_d = d
+            best_i = i
+        end
+    end
+    return best_i
+end
+
 function CollectionUI.destroy_grid(game)
     for _, node in ipairs(game._collection_nodes or {}) do
         if node then
@@ -531,7 +565,10 @@ function CollectionUI.build_grid(game)
     end
 end
 
-function CollectionUI.layout_grid(game)
+--- Put every node back on its slot. Targets only, so the cards spring across; pass
+--- `snap` when the grid is being built or paged and there is nothing to animate from.
+---@param snap boolean|nil
+function CollectionUI.layout_grid(game, snap)
     local count = tonumber(game._collection_page_count) or #(game._collection_nodes or {})
     if count <= 0 then return end
     local m = CollectionUI.grid_metrics(count)
@@ -540,14 +577,49 @@ function CollectionUI.layout_grid(game)
             local x, y = CollectionUI.slot_position(m, i, count)
             node.T.x = x
             node.T.y = y
-            node.VT.x = x
-            node.VT.y = y
             node.T.r = 0
-            node.VT.r = 0
             node.T.scale = 1
-            node.VT.scale = 1
+            if snap then
+                node.VT.x = x
+                node.VT.y = y
+                node.VT.r = 0
+                node.VT.scale = 1
+            end
         end
     end
+end
+
+--- Reorder live while a collection card is dragged.
+---
+--- The reference re-sorts a CardArea by card centre every frame and lays out everything except
+--- the card under the finger (`reference/Balatro/cardarea.lua:410`), so the row opens a gap as
+--- you pass over it rather than resolving on release. This is the same thing driven off touch
+--- moves instead of a per-frame sort, which costs nothing on the frames where nothing changed.
+---@return boolean moved this frame
+function CollectionUI.update_drag_reorder(game, node)
+    local nodes = game._collection_nodes
+    if not node or not nodes or not node.VT then return false end
+    local count = tonumber(game._collection_page_count) or #nodes
+    if count <= 1 then return false end
+
+    local from_idx
+    for i, n in ipairs(nodes) do
+        if n == node then from_idx = i break end
+    end
+    if not from_idx then return false end
+
+    local m = CollectionUI.grid_metrics(count)
+    local centre_x = node.VT.x + node.VT.w * (node.VT.scale or 1) * 0.5
+    local to_idx = CollectionUI.slot_index_from_x(m, count, from_idx, centre_x)
+    if to_idx == from_idx then return false end
+
+    table.remove(nodes, from_idx)
+    table.insert(nodes, to_idx, node)
+    CollectionUI.layout_grid(game, false)
+    -- The click the reference plays whenever a card lands somewhere new in an area
+    -- (`cardarea.lua:140`).
+    Sfx.play("cardSlide1", 1.05, 0.5)
+    return true
 end
 
 function CollectionUI.draw_category_menu(game)
@@ -829,6 +901,7 @@ function CollectionUI.handle_touchmoved(game, id, x, y, dx, dy)
     if game._menu_sub_state ~= "collection_grid" then return end
     if game.dragging and game.dragging.touchmoved then
         game.dragging:touchmoved(id, x, y, dx, dy)
+        CollectionUI.update_drag_reorder(game, game.dragging)
     end
 end
 
@@ -846,11 +919,10 @@ function CollectionUI.handle_touchreleased(game, id, x, y)
     if released and dist < TAP_THRESHOLD then
         CollectionUI.toggle_tooltip(game, released)
     elseif released and dist >= TAP_THRESHOLD then
-        -- Collection areas are a loose surface in the reference: a dragged card stays where
-        -- it was dropped until the page is rebuilt. Moveable normally springs VT back to T, so
-        -- promote the finger-owned visual position to the target before ending the drag.
-        released.T.x = released.VT.x
-        released.T.y = released.VT.y
+        -- One last pass in case the finger crossed a slot boundary between the final move and
+        -- the release, then the card springs into the slot it opened up.
+        CollectionUI.update_drag_reorder(game, released)
+        CollectionUI.layout_grid(game, false)
         CollectionUI.clear_tooltips(game)
     end
     game.dragging = nil
