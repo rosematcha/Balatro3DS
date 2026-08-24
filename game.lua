@@ -2,6 +2,7 @@
 Game = Object:extend()
 
 local ShopUI = require("shop_ui")
+local ReferenceRNG = require("reference_rng")
 local DragZonesUI = require("drag_zones_ui")
 local RoundWinUI = require("round_win_ui")
 local GameOverUI = require("game_over_ui")
@@ -270,6 +271,7 @@ function Game:init(seed)
     self.shop_offer_nodes = {}
     self.shop_booster_offers = {}
     self.shop_booster_slots = 2
+    self.first_shop_buffoon = false
     self.active_shop_booster_slot = nil
     self.booster_session = nil
     self._booster_closing = nil
@@ -383,14 +385,15 @@ function Game:init(seed)
     self:init_jokers()
 end
 
-local RUN_SEED_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+local RUN_SEED_ALPHABET = "123456789ABCDEFGHIJKLMNPQRSTUVWXYZ"
 local RNG_MODULUS = 4294967296
 
---- Keep only alphanumeric upper-case run identities, matching the reference's visible seed form.
---- `reference/Balatro/functions/misc_functions.lua:270-277`
+--- Base-game seed input accepts one to eight characters. Its input handler maps
+--- the ambiguous `0` key to `O` and otherwise accepts 1-9/A-Z.
+--- `reference/Balatro/functions/button_callbacks.lua:966-1000`
 function Game:normalize_run_seed(seed)
-    local value = tostring(seed or ""):upper():gsub("[^0-9A-Z]", "")
-    if #value ~= 8 then return nil end
+    local value = tostring(seed or ""):upper():gsub("0", "O"):gsub("[^1-9A-Z]", "")
+    if #value < 1 or #value > 8 then return nil end
     return value
 end
 
@@ -407,8 +410,7 @@ function Game:generate_run_seed()
     return value
 end
 
---- Cheap numeric hash derived from the reference's pseudohash recurrence.
---- This is deliberately not reference-compatible: this port has different pools and roll order.
+--- Reference hash used to initialize every keyed pseudorandom sequence.
 --- `reference/Balatro/functions/misc_functions.lua:279-319`
 function Game:pseudohash(value)
     local num = 1
@@ -419,26 +421,33 @@ function Game:pseudohash(value)
     return num
 end
 
-function Game:seed_rng_stream(seed)
-    if not Game._rng_original_random then
-        Game._rng_original_random = math.random
-        math.random = function(min, max)
-            if G and G._rng_streams then return G:random("default", min, max) end
-            return Game._rng_original_random(min, max)
-        end
-    end
-    self.SEED = self:normalize_run_seed(seed) or self:generate_run_seed()
-    self._rng_streams = {}
+local function reference_round(value)
+    return tonumber(string.format("%.13f", value))
 end
 
---- Draw from a named stream. Stream state, rather than a global draw count, is saved verbatim.
-function Game:random(key, min, max)
-    key = tostring(key or "default")
+--- Advance one of Balatro's keyed seed sequences.
+--- `reference/Balatro/functions/misc_functions.lua:298-313`
+function Game:pseudoseed(key, predict_seed)
+    key = tostring(key or "")
+    if predict_seed ~= nil then
+        local predicted = self:pseudohash(key .. tostring(predict_seed))
+        predicted = math.abs(reference_round((2.134453429141 + predicted * 1.72431234) % 1))
+        return (predicted + self:pseudohash(tostring(predict_seed))) / 2
+    end
     local streams = self._rng_streams
     if type(streams) ~= "table" then
         streams = {}
         self._rng_streams = streams
     end
+    local state = streams[key]
+    if state == nil then state = self:pseudohash(key .. tostring(self.SEED or "")) end
+    state = math.abs(reference_round((2.134453429141 + state * 1.72431234) % 1))
+    streams[key] = state
+    return (state + (tonumber(self._rng_hashed_seed) or 0)) / 2
+end
+
+local function legacy_random(self, key, min, max)
+    local streams = self._rng_streams
     local state = streams[key]
     if state == nil then
         state = math.floor(self:pseudohash(key .. self.SEED) * (RNG_MODULUS - 1))
@@ -448,18 +457,70 @@ function Game:random(key, min, max)
     streams[key] = state
     local unit = state / RNG_MODULUS
     if min == nil then return unit end
-    if max == nil then
-        max, min = min, 1
-    end
-    min, max = math.floor(min), math.floor(max)
-    if max < min then return min end
-    return min + math.floor(unit * (max - min + 1))
+    if max == nil then max, min = min, 1 end
+    return math.floor(min) + math.floor(unit * (math.floor(max) - math.floor(min) + 1))
 end
 
---- Saved streams already contain their exact positions; no replay loop is required.
-function Game:restore_rng_stream(seed, streams)
+function Game:seed_rng_stream(seed)
+    if not Game._rng_original_random then
+        Game._rng_original_random = math.random
+        math.random = function(min, max)
+            if G and G._reference_math_rng then return G._reference_math_rng:random(min, max) end
+            if min == nil then return Game._rng_original_random() end
+            if max == nil then return Game._rng_original_random(min) end
+            return Game._rng_original_random(min, max)
+        end
+    end
+    self.SEED = self:normalize_run_seed(seed) or self:generate_run_seed()
+    self._rng_streams = {}
+    self._rng_hashed_seed = self:pseudohash(self.SEED)
+    self._reference_math_rng = ReferenceRNG.new(0)
+    self._legacy_rng_streams = nil
+end
+
+--- Reference-compatible shorthand for `pseudorandom(key, min, max)`.
+function Game:random(key, min, max)
+    key = tostring(key or "default")
+    if self._legacy_rng_streams then return legacy_random(self, key, min, max) end
+    local seed = self:pseudoseed(key)
+    self._reference_math_rng:seed(seed)
+    return self._reference_math_rng:random(min, max)
+end
+
+--- Reference `pseudoshuffle`: one keyed seed, then an uninterrupted Fisher-Yates pass.
+function Game:pseudoshuffle(list, key)
+    if type(list) ~= "table" then return list end
+    if self._legacy_rng_streams then
+        for i = #list, 2, -1 do
+            local j = self:random(key or "shuffle", 1, i)
+            list[i], list[j] = list[j], list[i]
+        end
+        return list
+    end
+    self._reference_math_rng:seed(self:pseudoseed(key or "shuffle"))
+    for i = #list, 2, -1 do
+        local j = self._reference_math_rng:random(1, i)
+        list[i], list[j] = list[j], list[i]
+    end
+    return list
+end
+
+function Game:restore_rng_stream(seed, streams, format, math_state)
     self:seed_rng_stream(seed)
-    if type(streams) == "table" then self._rng_streams = copy_table(streams) end
+    if type(streams) == "table" then
+        self._rng_streams = copy_table(streams)
+        if format ~= "reference" then
+            for _, state in pairs(streams) do
+                if tonumber(state) and tonumber(state) > 1 then
+                    self._legacy_rng_streams = true
+                    break
+                end
+            end
+        end
+    end
+    if not self._legacy_rng_streams and type(math_state) == "table" then
+        self._reference_math_rng:restore(math_state)
+    end
 end
 
 function Game:reset_run_stats()
@@ -788,10 +849,7 @@ function Game:boss_reset_for_new_blind()
         self.boss_runtime.house_face_down_draws = self:get_effective_hand_size_limit()
     end
     if boss_id == "bl_final_acorn" and type(self.jokers) == "table" and #self.jokers > 1 then
-        for i = #self.jokers, 2, -1 do
-            local j = self:random("acorn", 1, i)
-            self.jokers[i], self.jokers[j] = self.jokers[j], self.jokers[i]
-        end
+        self:pseudoshuffle(self.jokers, "acorn")
         for _, j in ipairs(self.jokers) do
             if j and j.set_face_up then
                 j:set_face_up(false)
@@ -4460,7 +4518,9 @@ function Game:build_run_snapshot()
         version = 1,
         seed = self.SEED,
         seeded = self.seeded == true or nil,
+        rng_format = self._legacy_rng_streams and "legacy_lcg" or "reference",
         rng_streams = copy_table(self._rng_streams or {}),
+        rng_math_state = copy_table(self._reference_math_rng and self._reference_math_rng.state or {}),
         resume_state = self:current_resume_state(),
         stage = self.STAGES.RUN,
         selected_deck_id = self:get_run_deck_id(),
@@ -4521,11 +4581,13 @@ function Game:build_run_snapshot()
         shop_booster_offers = copy_table(self.shop_booster_offers or {}),
         shop_offer_slots = tonumber(self.shop_offer_slots) or 2,
         shop_booster_slots = tonumber(self.shop_booster_slots) or 2,
+        first_shop_buffoon = self.first_shop_buffoon == true,
         active_shop_booster_slot = self.active_shop_booster_slot,
         booster_session = self:_serialize_booster_session(),
         tarots_used = tonumber(self.tarots_used) or 0,
         vouchers = copy_table(self.vouchers or {}),
         shop_voucher_offers = copy_table(self.shop_voucher_offers or {}),
+        current_round_voucher_id = self.current_round_voucher_id,
         shop_voucher_bought_pending_boss = self.shop_voucher_bought_pending_boss == true,
         hand_size_delta_voucher = tonumber(self.hand_size_delta_voucher) or 0,
         hand_size_delta_juggle = tonumber(self.hand_size_delta_juggle) or 0,
@@ -4706,6 +4768,7 @@ function Game:load_run_snapshot(snapshot)
     self.shop_booster_offers = copy_table(snapshot.shop_booster_offers or {})
     self.shop_offer_slots = tonumber(snapshot.shop_offer_slots) or self.shop_offer_slots or 2
     self.shop_booster_slots = tonumber(snapshot.shop_booster_slots) or self.shop_booster_slots or 2
+    self.first_shop_buffoon = snapshot.first_shop_buffoon == true
     self.active_shop_booster_slot = snapshot.active_shop_booster_slot
     self.consumable_base_capacity = tonumber(snapshot.consumable_base_capacity) or 2
     self.tarots_used = tonumber(snapshot.tarots_used) or 0
@@ -4717,6 +4780,7 @@ function Game:load_run_snapshot(snapshot)
     else
         self.shop_voucher_offers = {}
     end
+    self.current_round_voucher_id = snapshot.current_round_voucher_id
     self.shop_voucher_nodes = {}
     self.shop_booster_nodes = {}
     self.shop_voucher_bought_pending_boss = snapshot.shop_voucher_bought_pending_boss == true
@@ -4866,7 +4930,7 @@ function Game:load_run_snapshot(snapshot)
     self:set_state(resume_state)
     -- Restore the draw position only after loading has rebuilt cards and UI state
     -- (reference saves retain deterministic RNG state rather than reseeding).
-    self:restore_rng_stream(seed, snapshot.rng_streams)
+    self:restore_rng_stream(seed, snapshot.rng_streams, snapshot.rng_format, snapshot.rng_math_state)
 
     -- A blind that was check-pointed between `set_state(SELECTING_HAND)` and the deal has no
     -- hand and no draw queue in it (see `prepare_hand_for_new_blind`), and nothing else ever
@@ -5077,7 +5141,8 @@ function Game:mark_boss_used(boss_id)
     if type(self.bosses_used_this_cycle) ~= "table" then
         self.bosses_used_this_cycle = {}
     end
-    self.bosses_used_this_cycle[boss_id] = true
+    self.bosses_used_this_cycle[boss_id] =
+        math.max(0, tonumber(self.bosses_used_this_cycle[boss_id]) or 0) + 1
 end
 
 function Game:reset_bosses_used_cycle()
@@ -5086,19 +5151,21 @@ end
 
 function Game:serialize_bosses_used_cycle()
     local out = {}
-    for id in pairs(self.bosses_used_this_cycle or {}) do
-        out[#out + 1] = id
+    for id, count in pairs(self.bosses_used_this_cycle or {}) do
+        if (tonumber(count) or 0) > 0 then out[id] = math.floor(tonumber(count)) end
     end
-    table.sort(out)
     return out
 end
 
 function Game:apply_bosses_used_cycle(data)
     self.bosses_used_this_cycle = {}
     if type(data) ~= "table" then return end
-    for _, id in ipairs(data) do
+    for key, value in pairs(data) do
+        -- Legacy snapshots stored an array of ids from the old boolean cycle.
+        local id, count = key, value
+        if type(key) == "number" then id, count = value, 1 end
         if type(id) == "string" and id ~= "" then
-            self.bosses_used_this_cycle[id] = true
+            self.bosses_used_this_cycle[id] = math.max(0, math.floor(tonumber(count) or 1))
         end
     end
 end
@@ -5109,30 +5176,29 @@ function Game:get_eligible_boss_pool(ante)
     local pool = self:get_boss_blind_pool(ante)
     if #pool == 0 then return pool end
     local used = self.bosses_used_this_cycle or {}
+    local minimum = math.huge
+    for _, id in ipairs(pool) do
+        minimum = math.min(minimum, tonumber(used[id]) or 0)
+    end
     local filtered = {}
     for _, id in ipairs(pool) do
-        if not used[id] then
+        if (tonumber(used[id]) or 0) == minimum then
             filtered[#filtered + 1] = id
         end
-    end
-    if #filtered == 0 then
-        self:reset_bosses_used_cycle()
-        return pool
     end
     return filtered
 end
 
 ---@param opts table|nil `{ exclude_current = true }` marks the current boss used before rolling (rerolls).
 function Game:roll_boss_blind(opts)
-    if type(opts) == "table" and opts.exclude_current == true and self.current_boss_blind_id then
-        self:mark_boss_used(self.current_boss_blind_id)
-    end
     local pool = self:get_eligible_boss_pool()
     if #pool == 0 then
         self.current_boss_blind_id = nil
         return nil
     end
+    table.sort(pool)
     self.current_boss_blind_id = pool[self:random("boss", #pool)]
+    self:mark_boss_used(self.current_boss_blind_id)
     return self.current_boss_blind_id
 end
 
@@ -6189,6 +6255,31 @@ local CONSUMABLE_POOL_FALLBACK = {
     tarot = "tarot_strength",
     planet = "planet_pluto",
     spectral = "spectral_incantation",
+}
+
+-- `G.P_CENTER_POOLS` order from reference `game.lua:535-589`. Keep unavailable entries in
+-- place: `get_current_pool` culls by replacing them, and a hit spends a `_resampleN` stream.
+local REFERENCE_CONSUMABLE_POOL_ORDERS = {
+    tarot = {
+        "tarot_fool", "tarot_magician", "tarot_high_priestess", "tarot_empress",
+        "tarot_emperor", "tarot_hierophant", "tarot_lovers", "tarot_chariot",
+        "tarot_justice", "tarot_hermit", "tarot_wheel_of_fortune", "tarot_strength",
+        "tarot_hanged_man", "tarot_death", "tarot_temperance", "tarot_devil",
+        "tarot_tower", "tarot_star", "tarot_moon", "tarot_sun", "tarot_judgement",
+        "tarot_world",
+    },
+    planet = {
+        "planet_mercury", "planet_venus", "planet_earth", "planet_mars",
+        "planet_jupiter", "planet_saturn", "planet_uranus", "planet_neptune",
+        "planet_pluto", "planet_x", "planet_ceres", "planet_eris",
+    },
+    spectral = {
+        "spectral_familiar", "spectral_grim", "spectral_incantation", "spectral_talisman",
+        "spectral_aura", "spectral_wraith", "spectral_sigil", "spectral_ouija",
+        "spectral_ectoplasm", "spectral_immolate", "spectral_ankh", "spectral_deja_vu",
+        "spectral_hex", "spectral_trance", "spectral_medium", "spectral_cryptid",
+        "spectral_soul", "spectral_black_hole",
+    },
 }
 
 --- Pick a random consumable of `kind`.
@@ -9810,45 +9901,79 @@ end
 
 function Game:roll_joker_shared_picks(def_id)
     if not self:uses_joker_shared_picks(def_id) then return nil end
-    local suits = { "Hearts", "Clubs", "Diamonds", "Spades" }
+    local ante = tostring(tonumber(self.ante) or 1)
+
+    local function valid_playing_cards()
+        local cards = {}
+        local function append(list)
+            for _, card in ipairs(list or {}) do
+                if card and card.enhancement ~= "stone" then cards[#cards + 1] = card end
+            end
+        end
+        append(self.deck and self.deck.cards)
+        append(self.deck and self.deck.discard_pile)
+        append(self.hand and self.hand.cards)
+        table.sort(cards, function(a, b)
+            local ua, ub = tonumber(a.uid) or math.huge, tonumber(b.uid) or math.huge
+            if ua == ub then
+                local ka = tostring(a.suit) .. tostring(a.rank)
+                local kb = tostring(b.suit) .. tostring(b.rank)
+                return ka < kb
+            end
+            return ua < ub
+        end)
+        return cards
+    end
 
     if def_id == "j_ancient_joker" then
-        return { random_suit = suits[self:random("anc", 1, #suits)] }
+        local previous = self.joker_shared_picks and self.joker_shared_picks[def_id]
+        local prior_suit = previous and previous.random_suit
+        local suits = {}
+        for _, suit in ipairs({ "Spades", "Hearts", "Clubs", "Diamonds" }) do
+            if suit ~= prior_suit then suits[#suits + 1] = suit end
+        end
+        return { random_suit = suits[self:random("anc" .. ante, 1, #suits)] }
     end
 
     if def_id == "j_castle" then
-        local deck = self.deck
-        if deck and deck.random_card then
-            local card = deck:random_card()
-            if card and card.suit then
-                return { random_suit = card.suit }
-            end
+        local cards = valid_playing_cards()
+        if #cards > 0 then
+            local card = cards[self:random("cas" .. ante, 1, #cards)]
+            return { random_suit = card.suit }
         end
-        return { random_suit = suits[self:random("cas", 1, #suits)] }
+        if self.deck and self.deck.random_card then
+            local card = self.deck:random_card()
+            if card and card.suit then return { random_suit = card.suit } end
+        end
+        return { random_suit = "Spades" }
     end
 
     if def_id == "j_mail" then
         -- Match Castle and Idol: choose from the run's actual deck rather than an
         -- evenly distributed rank (reference/Balatro/functions/common_events.lua:2288-2300).
-        local deck = self.deck
-        if deck and deck.random_card then
-            local card = deck:random_card()
-            if card and card.rank then
-                return { random_rank = card.rank }
-            end
+        local cards = valid_playing_cards()
+        if #cards > 0 then
+            local card = cards[self:random("mail" .. ante, 1, #cards)]
+            return { random_rank = card.rank }
         end
-        return { random_rank = self:random("mail", 2, 14) }
+        if self.deck and self.deck.random_card then
+            local card = self.deck:random_card()
+            if card and card.rank then return { random_rank = card.rank } end
+        end
+        return { random_rank = 14 }
     end
 
     if def_id == "j_idol" then
-        local deck = self.deck
-        if deck and deck.random_card then
-            local card = deck:random_card()
-            if card then
-                return { random_rank = card.rank, random_suit = card.suit }
-            end
+        local cards = valid_playing_cards()
+        if #cards > 0 then
+            local card = cards[self:random("idol" .. ante, 1, #cards)]
+            return { random_rank = card.rank, random_suit = card.suit }
         end
-        return { random_rank = self:random("idol", 2, 14), random_suit = suits[self:random("idol", 1, #suits)] }
+        if self.deck and self.deck.random_card then
+            local card = self.deck:random_card()
+            if card then return { random_rank = card.rank, random_suit = card.suit } end
+        end
+        return { random_rank = 14, random_suit = "Spades" }
     end
 
     if def_id == "j_todo_list" then
@@ -9872,6 +9997,20 @@ function Game:roll_joker_shared_picks(def_id)
     end
 
     return nil
+end
+
+function Game:reset_ante_joker_shared_picks()
+    local previous_ancient = self.joker_shared_picks
+        and self.joker_shared_picks.j_ancient_joker
+        and self.joker_shared_picks.j_ancient_joker.random_suit
+    self:clear_joker_shared_picks()
+    if previous_ancient then
+        self.joker_shared_picks.j_ancient_joker = { random_suit = previous_ancient }
+    end
+    for _, id in ipairs({ "j_idol", "j_mail", "j_ancient_joker", "j_castle" }) do
+        local picks = self:roll_joker_shared_picks(id)
+        if picks then self:set_joker_shared_picks(id, picks) end
+    end
 end
 
 function Game:ensure_joker_shared_picks(def_id)
@@ -10696,7 +10835,7 @@ function Game:prepare_hand_for_new_blind()
     -- (reference `game.lua:1435-1436`); see `reference/review/03-cue-map.md`.
     self:set_state(self.STATES.SELECTING_HAND)
     if self.deck and self.deck.shuffle then
-        self.deck:shuffle()
+        self.deck:shuffle("nr" .. tostring(tonumber(self.ante) or 1))
     end
     if not self.hand and Hand then
         self.hand = Hand(self)
@@ -10748,6 +10887,7 @@ function Game:initialize_run_loop()
     self.shop_reroll_count = 0
     self.shop_free_rerolls_used = 0
     self.shop_offer_slots = 2
+    self.first_shop_buffoon = false
     self.vouchers = {}
     self.shop_voucher_offers = {}
     self.shop_voucher_nodes = {}
@@ -10788,7 +10928,15 @@ function Game:initialize_run_loop()
     G:apply_deck_config(G._pending_deck_id   or "b_red")
     G:apply_stake_config(G._pending_stake_id or "stake_white")
     G:apply_pending_challenge()
+    if self.deck and self.deck.assign_reference_sort_ids then
+        self.deck:assign_reference_sort_ids()
+        self.deck:shuffle("shuffle")
+    end
+    self:reset_ante_joker_shared_picks()
     self:init_shop_offer_queue()
+    self:roll_boss_blind()
+    local initial_voucher = self:_roll_one_shop_voucher_offer()
+    self.current_round_voucher_id = initial_voucher and initial_voucher.id or "v_blank"
     self:roll_skips()
     self:set_state(self.STATES.BLIND_SELECT)
     self:begin_blind_select_intro()
@@ -10985,9 +11133,6 @@ end
 function Game:advance_after_shop()
     if self._last_completed_blind_was_boss then
         self.boss_rerolls_used_this_ante = 0
-        if self.current_boss_blind_id then
-            self:mark_boss_used(self.current_boss_blind_id)
-        end
         self._ante_played_card_uids = {}
         self.current_boss_blind_id = nil
         self.current_blind_index = 1
@@ -11028,11 +11173,14 @@ end
 
 function Game:init_shop_offer_queue()
     self.shop_offer_queue = {}
-    self:_refill_shop_offer_queue(128)
 end
 
 function Game:_shop_rand_int(lo, hi)
-    return self:random("shop", lo, hi)
+    return self:random("cdt" .. tostring(tonumber(self.ante) or 1), lo, hi)
+end
+
+function Game:_shop_rate_poll(total)
+    return self:random("cdt" .. tostring(tonumber(self.ante) or 1)) * total
 end
 
 function Game:_pack_rand_int(lo, hi)
@@ -11094,7 +11242,15 @@ end
 
 function Game:_roll_shop_playing_card_offer()
     if not self:has_voucher("v_magic_trick") then return nil end
-    local data = self:_roll_playing_card_data(self:has_voucher("v_illusion"))
+    local illusion = self:has_voucher("v_illusion")
+    local enhanced = illusion and self:random("illusion") > 0.6
+    local data = self:_roll_playing_card_data(enhanced, "sho", enhanced)
+    if illusion and self:random("illusion") > 0.8 then
+        local edition_poll = self:random("illusion")
+        local edition = edition_poll > 0.85 and "polychrome"
+            or edition_poll > 0.5 and "holo" or "foil"
+        data.modifier = { edition = edition }
+    end
     local rank = data.rank
     local suit = data.suit
     local name = string.format("%s %s", tostring(rank), suit)
@@ -11108,32 +11264,63 @@ function Game:_roll_shop_playing_card_offer()
     }
 end
 
---- Generate a random playing card for an Illusion shop offer or Standard Pack.
---- Standard cards use the same enhancement/seal/edition polling as Illusion cards
---- (reference card.lua:1647-1665).
-function Game:_roll_playing_card_data(with_modifiers, stream)
-    local function roll(lo, hi) return stream == "pack" and self:_pack_rand_int(lo, hi) or self:_shop_rand_int(lo, hi) end
-    local suits = { "Hearts", "Clubs", "Diamonds", "Spades" }
-    local rank = roll(2, 14)
-    local suit = suits[roll(1, #suits)]
-    local data = { rank = rank, suit = suit, enhancement = nil, seal = nil }
-    if with_modifiers then
-        if roll(1, 100) <= 40 then
-            local enhs = { "bonus", "mult", "wild", "glass", "steel", "gold", "lucky" }
-            data.enhancement = enhs[roll(1, #enhs)]
+local REFERENCE_PLAYING_CARD_FRONTS = nil
+
+--- `pseudorandom_element(G.P_CARDS, ...)` sorts the string keys before selecting, so the
+--- insertion order in either game's card table is irrelevant (`misc_functions.lua:253-267`).
+local function reference_playing_card_fronts()
+    if REFERENCE_PLAYING_CARD_FRONTS then return REFERENCE_PLAYING_CARD_FRONTS end
+    local suit_keys = { C = "Clubs", D = "Diamonds", H = "Hearts", S = "Spades" }
+    local rank_keys = { "2", "3", "4", "5", "6", "7", "8", "9", "A", "J", "K", "Q", "T" }
+    local rank_values = { A = 14, J = 11, K = 13, Q = 12, T = 10 }
+    local fronts = {}
+    for _, suit_key in ipairs({ "C", "D", "H", "S" }) do
+        for _, rank_key in ipairs(rank_keys) do
+            fronts[#fronts + 1] = {
+                key = suit_key .. "_" .. rank_key,
+                rank = rank_values[rank_key] or tonumber(rank_key),
+                suit = suit_keys[suit_key],
+            }
         end
-        if roll(1, 100) <= 20 then
-            local seals = { "red", "blue", "gold", "purple" }
-            data.seal = seals[roll(1, #seals)]
-        end
-        -- Standard/Illusion edition poll is 2x normal and cannot be Negative.
-        local r = roll(1, 10000)
+    end
+    REFERENCE_PLAYING_CARD_FRONTS = fronts
+    return fronts
+end
+
+function Game:_random_reference_playing_card_front(key)
+    local fronts = reference_playing_card_fronts()
+    return fronts[self:random(key, 1, #fronts)]
+end
+
+--- Generate a playing card using the reference `create_card` keys. `append` is `sho` for
+--- Magic Trick/Illusion and `sta` for Standard Packs (`common_events.lua:2082-2133`).
+function Game:_roll_playing_card_data(with_modifiers, append, enhanced)
+    append = append or "sho"
+    local ante = tostring(math.floor(tonumber(self.ante) or 1))
+    local front = self:_random_reference_playing_card_front("front" .. append .. ante)
+    local data = { rank = front.rank, suit = front.suit, enhancement = nil, seal = nil }
+
+    if with_modifiers and enhanced then
+        local enhancements = { "bonus", "mult", "wild", "glass", "steel", "stone", "gold", "lucky" }
+        data.enhancement = enhancements[self:random("Enhanced" .. append .. ante, 1, #enhancements)]
+    end
+    if with_modifiers and append == "sta" then
+        -- Standard Packs use twice the ordinary edition rate, never Negative.
+        local edition_poll = self:random("standard_edition" .. ante)
+        local rates = self:get_joker_edition_rates()
         local edition
-        if r > 9880 then edition = "polychrome"
-        elseif r > 9600 then edition = "holo"
-        elseif r > 9200 then edition = "foil"
-        end
+        if edition_poll > 1 - rates.polychrome * 2 / 100 then edition = "polychrome"
+        elseif edition_poll > 1 - rates.holo * 2 / 100 then edition = "holo"
+        elseif edition_poll > 1 - rates.foil * 2 / 100 then edition = "foil" end
         if edition then data.modifier = { edition = edition } end
+
+        if self:random("stdseal" .. ante) > 0.8 then
+            local seal_poll = self:random("stdsealtype" .. ante)
+            if seal_poll > 0.75 then data.seal = "red"
+            elseif seal_poll > 0.5 then data.seal = "blue"
+            elseif seal_poll > 0.25 then data.seal = "gold"
+            else data.seal = "purple" end
+        end
     end
     return data
 end
@@ -11161,7 +11348,12 @@ function Game:_shop_voucher_candidate_ids(exclude_ids)
             end
         end
     end
-    table.sort(candidates)
+    table.sort(candidates, function(a, b)
+        local da, db = VOUCHER_DEFS[a] or {}, VOUCHER_DEFS[b] or {}
+        local oa, ob = tonumber(da.order) or math.huge, tonumber(db.order) or math.huge
+        if oa == ob then return a < b end
+        return oa < ob
+    end)
     return candidates
 end
 
@@ -11177,21 +11369,41 @@ function Game:_make_shop_voucher_offer(vid)
     }
 end
 
---- Pick one unowned voucher not already in `shop_voucher_offers`.
+local REFERENCE_VOUCHER_ORDER = {
+    "v_overstock", "v_overstock_plus", "v_clearance_sale", "v_liquidation",
+    "v_hone", "v_glow_up", "v_reroll", "v_reroll_glut",
+    "v_crystal_ball", "v_omen_globe", "v_telescope", "v_observatory",
+    "v_grabber", "v_nacho", "v_wasteful", "v_recyclomancy",
+    "v_tarot_merchant", "v_tarot_tycoon", "v_planet_merchant", "v_planet_tycoon",
+    "v_seed_money", "v_money_tree", "v_blank", "v_antimatter",
+    "v_magic_trick", "v_illusion", "v_hieroglyph", "v_petroglyph",
+    "v_directors_cut", "v_retcon", "v_paint_brush", "v_palette",
+}
+
+--- Pick one voucher without compacting the reference pool's unavailable slots.
 ---@return table|nil offer
-function Game:_roll_one_shop_voucher_offer()
+function Game:_roll_one_shop_voucher_offer(from_tag)
     local exclude = {}
     for _, offer in ipairs(self.shop_voucher_offers or {}) do
         if offer and offer.id then
             exclude[offer.id] = true
         end
     end
-    local candidates = self:_shop_voucher_candidate_ids(exclude)
-    local pick
-    if #candidates == 0 then
-        pick = "v_blank"
-    else
-        pick = candidates[self:_shop_rand_int(1, #candidates)]
+    local eligible = {}
+    for _, id in ipairs(self:_shop_voucher_candidate_ids(exclude)) do eligible[id] = true end
+    local available = 0
+    for _, id in ipairs(REFERENCE_VOUCHER_ORDER) do if eligible[id] then available = available + 1 end end
+    local pick = "v_blank"
+    if available > 0 then
+        local base_key = from_tag and "Voucher_fromtag"
+            or "Voucher" .. tostring(tonumber(self.ante) or 1)
+        local attempt = 1
+        while true do
+            local key = attempt == 1 and base_key or base_key .. "_resample" .. attempt
+            local candidate = REFERENCE_VOUCHER_ORDER[self:random(key, 1, #REFERENCE_VOUCHER_ORDER)]
+            if eligible[candidate] then pick = candidate break end
+            attempt = attempt + 1
+        end
     end
     return self:_make_shop_voucher_offer(pick)
 end
@@ -11209,7 +11421,7 @@ function Game:apply_voucher_tags_to_shop()
     -- Remove highest indices first so indices stay valid.
     table.sort(to_remove, function(a, b) return a > b end)
     for _, i in ipairs(to_remove) do
-        local offer = self:_roll_one_shop_voucher_offer()
+        local offer = self:_roll_one_shop_voucher_offer(true)
         if offer then
             if not self.shop_voucher_offers then self.shop_voucher_offers = {} end
             self.shop_voucher_offers[#self.shop_voucher_offers + 1] = offer
@@ -11224,6 +11436,7 @@ function Game:maybe_roll_shop_voucher_on_shop_enter()
         self.shop_voucher_offers = {}
         local offer = self:_roll_one_shop_voucher_offer()
         if offer then
+            self.current_round_voucher_id = offer.id
             self.shop_voucher_offers[1] = offer
         end
         self:apply_voucher_tags_to_shop()
@@ -11239,8 +11452,11 @@ function Game:maybe_roll_shop_voucher_on_shop_enter()
     -- Normal slot: roll one if empty, then add any voucher tags.
     if not self.shop_voucher_offers or #self.shop_voucher_offers == 0 then
         self.shop_voucher_offers = {}
-        local offer = self:_roll_one_shop_voucher_offer()
+        local offer = self.current_round_voucher_id
+            and self:_make_shop_voucher_offer(self.current_round_voucher_id)
+            or self:_roll_one_shop_voucher_offer()
         if offer then
+            self.current_round_voucher_id = offer.id
             self.shop_voucher_offers[1] = offer
         end
     end
@@ -11253,6 +11469,7 @@ function Game:roll_shop_voucher()
     self.shop_voucher_offers = {}
     local offer = self:_roll_one_shop_voucher_offer()
     if offer then
+        self.current_round_voucher_id = offer.id
         self.shop_voucher_offers[1] = offer
     end
     self:sync_shop_voucher_nodes()
@@ -11444,35 +11661,32 @@ function Game:get_joker_edition_rates()
         -- Negative is a flat 0.3% poll and is not affected by Hone/Glow Up
         -- (reference common_events.lua:2055-2080).
         negative = 0.3,
-        polychrome = 0.3,
-        holo = 1.4,
-        foil = 2.0,
+        polychrome = 0.6,
+        holo = 2.0,
+        foil = 4.0,
     }
 
     if has_glow_up then
-        rates.polychrome = 2.1
-        rates.holo = 5.6
-        rates.foil = 8.0
+        rates.polychrome = 2.4
+        rates.holo = 8.0
+        rates.foil = 16.0
     elseif has_hone then
-        rates.polychrome = 0.9
-        rates.holo = 2.8
-        rates.foil = 4.0
+        rates.polychrome = 1.2
+        rates.holo = 4.0
+        rates.foil = 8.0
     end
 
     return rates
 end
 
-function Game:roll_joker_offer_edition()
+function Game:roll_joker_offer_edition(append)
     local rates = self:get_joker_edition_rates()
-    local r = self:_shop_rand_int(1, 10000) / 100
-    local acc = tonumber(rates.negative) or 0
-    if r <= acc then return "negative" end
-    acc = acc + (tonumber(rates.polychrome) or 0)
-    if r <= acc then return "polychrome" end
-    acc = acc + (tonumber(rates.holo) or 0)
-    if r <= acc then return "holo" end
-    acc = acc + (tonumber(rates.foil) or 0)
-    if r <= acc then return "foil" end
+    local ante = tostring(tonumber(self.ante) or 1)
+    local r = self:random("edi" .. tostring(append or "sho") .. ante)
+    if r > 1 - (tonumber(rates.negative) or 0) / 100 then return "negative" end
+    if r > 1 - (tonumber(rates.polychrome) or 0) / 100 then return "polychrome" end
+    if r > 1 - (tonumber(rates.holo) or 0) / 100 then return "holo" end
+    if r > 1 - (tonumber(rates.foil) or 0) / 100 then return "foil" end
     return "base"
 end
 
@@ -11482,6 +11696,14 @@ function Game:_shop_joker_owned(id)
         if j and j.def and j.def.id == id then
             return true
         end
+    end
+    return false
+end
+
+
+function Game:_shop_offer_has_id(id)
+    for _, offer in ipairs(self.shop_offers or {}) do
+        if offer and offer.id == id then return true end
     end
     return false
 end
@@ -11500,17 +11722,12 @@ function Game:_refill_shop_offer_queue(target_len)
 end
 
 function Game:_pop_shop_queue_entry()
-    self:_refill_shop_offer_queue(64)
-    local guard = 0
-    while guard < 64 do
-        guard = guard + 1
-        if #(self.shop_offer_queue or {}) == 0 then break end
+    while #(self.shop_offer_queue or {}) > 0 do
         local entry = table.remove(self.shop_offer_queue, 1)
-        if not entry then break end
         self:remap_shop_joker_offer(entry)
         local is_joker = entry.kind == "joker" or entry.kind == nil
         if is_joker and type(entry.id) == "string" and not self:joker_meets_deck_requirement(entry.id) then
-            -- Skip deck-gated jokers that were queued before the requirement was met.
+            -- Compatibility with saves made before offers became lazy.
         else
             return entry
         end
@@ -11550,7 +11767,7 @@ function Game:_generate_next_shop_queue_offer()
     local max_attempts = 32
 
     for _ = 1, max_attempts do
-        local roll = self:_shop_rand_int(1, total)
+        local roll = self:_shop_rate_poll(total)
         local kind = "planet"
         if roll <= joker_weight then
             kind = "joker"
@@ -11592,50 +11809,54 @@ end
 --- Shop joker rarity: Common 70%, Uncommon 25%, Rare 5% (no Legendary). `rand_int` isolates RNG source.
 ---@param rand_int fun(lo: integer, hi: integer): integer
 ---@return string|nil
-function Game:_pick_joker_id_shop_rarity_distribution(rand_int)
+function Game:_pick_joker_id_shop_rarity_distribution(rand_int, append, picked_ids)
     if type(JOKER_DEFS) ~= "table" then return nil end
     if type(rand_int) ~= "function" then return nil end
-    local rar_roll = rand_int(1, 100)
+    local ante = tostring(tonumber(self.ante) or 1)
+    append = append or "sho"
+    local rar_roll = self:random("rarity" .. ante .. append)
     local target_rar = 3
-    if rar_roll <= 70 then
+    if rar_roll <= 0.7 then
         target_rar = 1
-    elseif rar_roll <= 95 then
+    elseif rar_roll <= 0.95 then
         target_rar = 2
     end
-    local candidates = {}
+    local pool = {}
     for id, def in pairs(JOKER_DEFS) do
         if type(def) == "table" and type(id) == "string" then
             local rv = tonumber(def.rarity) or 1
-            if rv == target_rar and rv >= 1 and rv <= 3 and not self:is_challenge_banned(id) and self:joker_allowed_in_random_pool(id) then
-                candidates[#candidates + 1] = id
-            end
+            if rv == target_rar then pool[#pool + 1] = id end
         end
     end
-    table.sort(candidates)
-    if #candidates == 0 then
-        for id, def in pairs(JOKER_DEFS) do
-            if type(def) == "table" and type(id) == "string" then
-                local rv = tonumber(def.rarity) or 1
-                if rv >= 1 and rv <= 3 and not self:is_challenge_banned(id) and self:joker_allowed_in_random_pool(id) then
-                    candidates[#candidates + 1] = id
-                end
-            end
-        end
-        table.sort(candidates)
+    table.sort(pool, function(a, b)
+        local da, db = JOKER_DEFS[a] or {}, JOKER_DEFS[b] or {}
+        local oa, ob = tonumber(da.order) or math.huge, tonumber(db.order) or math.huge
+        if oa == ob then return a < b end
+        return oa < ob
+    end)
+    if #pool == 0 then return nil end
+    local pool_key = "Joker" .. target_rar .. append .. ante
+    for attempt = 1, #pool + 8 do
+        local key = attempt == 1 and pool_key or (pool_key .. "_resample" .. attempt)
+        local id = pool[self:random(key, 1, #pool)]
+        if id and not self:is_challenge_banned(id) and self:joker_allowed_in_random_pool(id)
+            and not self:_shop_joker_owned(id)
+            and not (picked_ids and picked_ids[id])
+            and (append ~= "sho" or not self:_shop_offer_has_id(id)) then return id end
     end
-    if #candidates == 0 then return nil end
-    return candidates[rand_int(1, #candidates)]
+    return "j_joker"
 end
 
-function Game:_roll_shop_queue_joker_offer()
+function Game:_roll_shop_queue_joker_offer(append, pack_area, picked_ids)
     if type(JOKER_DEFS) ~= "table" then return nil end
+    append = append or "sho"
     local pick = self:_pick_joker_id_shop_rarity_distribution(function(lo, hi)
         return self:_shop_rand_int(lo, hi)
-    end)
+    end, append, picked_ids)
     if not pick then return nil end
     local def = JOKER_DEFS[pick]
-    local edition = self:roll_joker_offer_edition()
-    local sticker_params = self:_build_joker_sticker_params(def)
+    local sticker_params = self:_build_joker_sticker_params(def, pack_area)
+    local edition = self:roll_joker_offer_edition(append)
     local create_params = self:_build_joker_create_params(def, { edition = edition }, sticker_params)
     local offer = {
         kind = "joker",
@@ -11654,17 +11875,37 @@ end
 
 function Game:_roll_shop_queue_consumable_offer(wanted_kind)
     if type(CONSUMABLE_DEFS) ~= "table" then return nil end
-    local ids = {}
-    for id, def in pairs(CONSUMABLE_DEFS) do
-        if type(def) == "table" and def.kind == wanted_kind and type(id) == "string" and not self:is_challenge_banned(id) then
-            if wanted_kind ~= "planet" or self:planet_consumable_unlocked(id, def) then
-                ids[#ids + 1] = id
-            end
-        end
-    end
-    table.sort(ids)
+    local ids = REFERENCE_CONSUMABLE_POOL_ORDERS[wanted_kind] or {}
     if #ids == 0 then return nil end
-    local pick = ids[self:_shop_rand_int(1, #ids)]
+    local allow_duplicates = self:hasJoker("j_ring_master")
+    local function blocked(id)
+        local def = CONSUMABLE_DEFS[id]
+        if not def or self:is_challenge_banned(id) then return true end
+        if id == "spectral_soul" or id == "spectral_black_hole" then return true end
+        if wanted_kind == "planet" and not self:planet_consumable_unlocked(id, def) then return true end
+        return not allow_duplicates
+            and (self:_shop_consumable_owned(id) or self:_shop_offer_has_id(id))
+    end
+    local available = 0
+    for _, id in ipairs(ids) do if not blocked(id) then available = available + 1 end end
+    local base_key = wanted_kind:sub(1, 1):upper() .. wanted_kind:sub(2) .. "sho"
+        .. tostring(tonumber(self.ante) or 1)
+    local pick
+    if available > 0 then
+        local attempt = 1
+        while not pick do
+            local key = attempt == 1 and base_key or (base_key .. "_resample" .. attempt)
+            local candidate = ids[self:random(key, 1, #ids)]
+            if candidate and not blocked(candidate) then
+                pick = candidate
+            end
+            attempt = attempt + 1
+        end
+    else
+        pick = CONSUMABLE_POOL_FALLBACK[wanted_kind]
+        if pick and self:is_challenge_banned(pick) then pick = nil end
+    end
+    if not pick then return nil end
     local def = CONSUMABLE_DEFS[pick]
     return {
         kind = wanted_kind,
@@ -11693,7 +11934,7 @@ function Game:shop_price_for_joker_offer(def, edition, sticker_params)
 end
 
 ---@param def table|nil
-function Game:_build_joker_sticker_params(def)
+function Game:_build_joker_sticker_params(def, pack_area)
     local params = {}
     if type(def) == "table" then
         local sticker_def = def.stickers
@@ -11707,13 +11948,19 @@ function Game:_build_joker_sticker_params(def)
         if def.rental == true then params.rental = true end
     end
 
-    if self._stake_eternal_jokers == true and params.eternal ~= true and self:_shop_rand_int(1, 100) <= 30 then
+    local ante = tostring(tonumber(self.ante) or 1)
+    local eternal_perishable_poll = self:random((pack_area and "packetper" or "etperpoll") .. ante)
+    if self._stake_eternal_jokers == true and params.eternal ~= true
+        and (not def or def.eternal_compat ~= false) and eternal_perishable_poll > 0.7 then
         params.eternal = true
     end
-    if params.eternal ~= true and self._stake_perishable_jokers == true and self:_shop_rand_int(1, 100) <= 30 then
+    if params.eternal ~= true and self._stake_perishable_jokers == true
+        and (not def or def.perishable_compat ~= false)
+        and eternal_perishable_poll > 0.4 and eternal_perishable_poll <= 0.7 then
         params.perishable = true
     end
-    if self._stake_rental_jokers == true and self:_shop_rand_int(1, 100) <= 30 then
+    if self._stake_rental_jokers == true
+        and self:random((pack_area and "packssjr" or "ssjr") .. ante) > 0.7 then
         params.rental = true
     end
     if params.eternal then params.perishable = nil end
@@ -12133,7 +12380,7 @@ end
 
 function Game:roll_skips()
     local ante = tonumber(self.ante) or 1
-    local eligible_tags = {}
+    local ordered_tags = {}
 
     local function tag_key_to_id(tag_key)
         if type(tag_key) ~= "string" then return -1 end
@@ -12165,29 +12412,57 @@ function Game:roll_skips()
         return -1
     end
 
+    local function requirement_discovered(requirement)
+        if not requirement then return true end
+        local discovery_id = requirement
+        if requirement:sub(1, 2) == "e_" then
+            discovery_id = "edition_" .. requirement:sub(3)
+        end
+        return self:is_discovered(discovery_id)
+    end
+
     if type(self.P_TAGS) == "table" then
         for tag_key, def in pairs(self.P_TAGS) do
             if type(def) == "table" and type(tag_key) == "string" then
-                local min_ante = tonumber(def.min_ante)
-                if (not min_ante) or ante >= min_ante then
-                    local id = tag_key_to_id(tag_key)
-                    if id ~= -1 and not self:is_challenge_banned(tag_key) then
-                        eligible_tags[#eligible_tags + 1] = tag_key
-                    end
-                end
+                if tag_key_to_id(tag_key) ~= -1 then ordered_tags[#ordered_tags + 1] = tag_key end
             end
         end
     end
 
-    if #eligible_tags == 0 then
-        eligible_tags = { "tag_uncommon" }
+    if #ordered_tags == 0 then
+        ordered_tags = { "tag_handy" }
     end
+    table.sort(ordered_tags, function(a, b)
+        local da, db = self.P_TAGS[a] or {}, self.P_TAGS[b] or {}
+        local oa, ob = tonumber(da.order) or math.huge, tonumber(db.order) or math.huge
+        if oa == ob then return a < b end
+        return oa < ob
+    end)
+    local function blocked(tag_key)
+        local def = self.P_TAGS[tag_key] or {}
+        local min_ante = tonumber(def.min_ante)
+        return (min_ante and ante < min_ante)
+            or not requirement_discovered(def.requires)
+            or self:is_challenge_banned(tag_key)
+    end
+    local available = 0
+    for _, tag_key in ipairs(ordered_tags) do if not blocked(tag_key) then available = available + 1 end end
 
     self.skips = {}
     self.skip_tag_orbital_hand = {}
     self.blinds_skipped = {}
     for slot = 1, 2 do
-        local tag_key = eligible_tags[self:random("tag", 1, #eligible_tags)]
+        local tag_key = "tag_handy"
+        if available > 0 then
+            local base_key = "Tag" .. tostring(ante)
+            local attempt = 1
+            while true do
+                local key = attempt == 1 and base_key or base_key .. "_resample" .. attempt
+                local candidate = ordered_tags[self:random(key, 1, #ordered_tags)]
+                if not blocked(candidate) then tag_key = candidate break end
+                attempt = attempt + 1
+            end
+        end
         self.skips[slot] = tag_key_to_id(tag_key)
         if self.skips[slot] == 17 then
             self.skip_tag_orbital_hand[slot] = self:roll_orbital_hand_index()
@@ -12221,25 +12496,43 @@ function Game:_roll_booster_size()
 end
 
 function Game:_roll_booster_offer_profile()
-    -- Scaled by 100 to keep integer RNG while preserving ratios
+    -- One entry per base-game centre, in `P_CENTER_POOLS.Booster` order.
+    -- Keeping the art variants in the weighted pool matters: the reference
+    -- chooses a centre in one poll, rather than choosing a profile and then
+    -- spending a second random draw on its sprite.
     local entries = {
-        { pack = "standard",  size = "normal", weight = 400 },
-        { pack = "arcana",    size = "normal", weight = 400 },
-        { pack = "celestial", size = "normal", weight = 400 },
-        { pack = "buffoon",   size = "normal", weight = 120 },
-        { pack = "spectral",  size = "normal", weight = 60 },
-
-        { pack = "standard",  size = "jumbo",  weight = 200 },
-        { pack = "arcana",    size = "jumbo",  weight = 200 },
-        { pack = "celestial", size = "jumbo",  weight = 200 },
-        { pack = "buffoon",   size = "jumbo",  weight = 60 },
-        { pack = "spectral",  size = "jumbo",  weight = 30 },
-
-        { pack = "standard",  size = "mega",   weight = 50 },
-        { pack = "arcana",    size = "mega",   weight = 50 },
-        { pack = "celestial", size = "mega",   weight = 50 },
-        { pack = "buffoon",   size = "mega",   weight = 15 },
-        { pack = "spectral",  size = "mega",   weight = 7 },
+        { key = "p_arcana_normal_1", pack = "arcana", size = "normal", weight = 100, frame = 0 },
+        { key = "p_arcana_normal_2", pack = "arcana", size = "normal", weight = 100, frame = 1 },
+        { key = "p_arcana_normal_3", pack = "arcana", size = "normal", weight = 100, frame = 2 },
+        { key = "p_arcana_normal_4", pack = "arcana", size = "normal", weight = 100, frame = 3 },
+        { key = "p_arcana_jumbo_1", pack = "arcana", size = "jumbo", weight = 100, frame = 8 },
+        { key = "p_arcana_jumbo_2", pack = "arcana", size = "jumbo", weight = 100, frame = 9 },
+        { key = "p_arcana_mega_1", pack = "arcana", size = "mega", weight = 25, frame = 10 },
+        { key = "p_arcana_mega_2", pack = "arcana", size = "mega", weight = 25, frame = 11 },
+        { key = "p_celestial_normal_1", pack = "celestial", size = "normal", weight = 100, frame = 4 },
+        { key = "p_celestial_normal_2", pack = "celestial", size = "normal", weight = 100, frame = 5 },
+        { key = "p_celestial_normal_3", pack = "celestial", size = "normal", weight = 100, frame = 6 },
+        { key = "p_celestial_normal_4", pack = "celestial", size = "normal", weight = 100, frame = 7 },
+        { key = "p_celestial_jumbo_1", pack = "celestial", size = "jumbo", weight = 100, frame = 12 },
+        { key = "p_celestial_jumbo_2", pack = "celestial", size = "jumbo", weight = 100, frame = 13 },
+        { key = "p_celestial_mega_1", pack = "celestial", size = "mega", weight = 25, frame = 14 },
+        { key = "p_celestial_mega_2", pack = "celestial", size = "mega", weight = 25, frame = 15 },
+        { key = "p_standard_normal_1", pack = "standard", size = "normal", weight = 100, frame = 22 },
+        { key = "p_standard_normal_2", pack = "standard", size = "normal", weight = 100, frame = 23 },
+        { key = "p_standard_normal_3", pack = "standard", size = "normal", weight = 100, frame = 24 },
+        { key = "p_standard_normal_4", pack = "standard", size = "normal", weight = 100, frame = 25 },
+        { key = "p_standard_jumbo_1", pack = "standard", size = "jumbo", weight = 100, frame = 26 },
+        { key = "p_standard_jumbo_2", pack = "standard", size = "jumbo", weight = 100, frame = 27 },
+        { key = "p_standard_mega_1", pack = "standard", size = "mega", weight = 25, frame = 28 },
+        { key = "p_standard_mega_2", pack = "standard", size = "mega", weight = 25, frame = 29 },
+        { key = "p_buffoon_normal_1", pack = "buffoon", size = "normal", weight = 60, frame = 30 },
+        { key = "p_buffoon_normal_2", pack = "buffoon", size = "normal", weight = 60, frame = 31 },
+        { key = "p_buffoon_jumbo_1", pack = "buffoon", size = "jumbo", weight = 60, frame = 32 },
+        { key = "p_buffoon_mega_1", pack = "buffoon", size = "mega", weight = 15, frame = 33 },
+        { key = "p_spectral_normal_1", pack = "spectral", size = "normal", weight = 30, frame = 16 },
+        { key = "p_spectral_normal_2", pack = "spectral", size = "normal", weight = 30, frame = 17 },
+        { key = "p_spectral_jumbo_1", pack = "spectral", size = "jumbo", weight = 30, frame = 18 },
+        { key = "p_spectral_mega_1", pack = "spectral", size = "mega", weight = 7, frame = 19 },
     }
 
     local spectral_ok = self:_spectral_consumable_defs_count() > 0
@@ -12247,25 +12540,25 @@ function Game:_roll_booster_offer_profile()
     local total = 0
     for _, e in ipairs(entries) do
         if (spectral_ok or e.pack ~= "spectral")
-            and not self:is_challenge_banned("p_" .. e.pack .. "_" .. e.size .. "_1") then
+            and not self:is_challenge_banned(e.key) then
             pool[#pool + 1] = e
             total = total + e.weight
         end
     end
     if total <= 0 or #pool == 0 then
-        return { pack = "arcana", size = "normal" }
+        return { key = "p_arcana_normal_1", pack = "arcana", size = "normal", frame = 0 }
     end
 
-    local r = self:_shop_rand_int(1, total)
+    local r = self:random("shop_pack" .. tostring(tonumber(self.ante) or 1)) * total
     local acc = 0
     for _, e in ipairs(pool) do
         acc = acc + e.weight
         if r <= acc then
-            return { pack = e.pack, size = e.size }
+            return { key = e.key, pack = e.pack, size = e.size, frame = e.frame }
         end
     end
     local last = pool[#pool]
-    return { pack = last.pack, size = last.size }
+    return { key = last.key, pack = last.pack, size = last.size, frame = last.frame }
 end
 
 function Game:_booster_offer_price(pack, size)
@@ -12292,16 +12585,22 @@ function Game:roll_shop_boosters()
     local slots = math.max(1, math.floor(tonumber(self.shop_booster_slots) or 2))
     self.shop_booster_offers = {}
     for _ = 1, slots do
-        local profile = self:_roll_booster_offer_profile()
+        local profile
+        if not self.first_shop_buffoon and not self:is_challenge_banned("p_buffoon_normal_1") then
+            self.first_shop_buffoon = true
+            local frame = ({ 30, 31 })[self._reference_math_rng:random(1, 2)]
+            profile = {
+                key = frame == 30 and "p_buffoon_normal_1" or "p_buffoon_normal_2",
+                pack = "buffoon", size = "normal", frame = frame,
+            }
+        else
+            profile = self:_roll_booster_offer_profile()
+        end
         local pack = profile.pack
         local size = profile.size
         local n_cards = BoosterPackUI.card_count_for_size(size, pack)
         local n_picks = BoosterPackUI.picks_for_size(size)
-        local frames = ShopUI.booster_frames_for_pack_size(pack, size)
-        local sprite_idx = nil
-        if type(frames) == "table" and #frames > 0 then
-            sprite_idx = frames[self:_shop_rand_int(1, #frames)]
-        end
+        local sprite_idx = profile.frame
         local new_price = self:_booster_offer_price(pack, size)
         if self:hasTag("coupon") ~= -1 then
             new_price = 0
@@ -12315,6 +12614,7 @@ function Game:roll_shop_boosters()
             card_count = n_cards,
             picks_granted = n_picks,
             booster_sprite_index = sprite_idx,
+            center_key = profile.key,
         }
     end
     self.active_shop_booster_slot = nil
@@ -12452,6 +12752,7 @@ end
 function Game:_shop_pick_unique_joker_ids(count)
     local out = {}
     local allow_duplicates = self:hasJoker("j_ring_master")
+    local picked_ids = {}
     local function joker_already_picked(id)
         if not id then return true end
         if not allow_duplicates and self:_shop_joker_owned(id) then return true end
@@ -12463,9 +12764,9 @@ function Game:_shop_pick_unique_joker_ids(count)
 
     if allow_duplicates then
         for _ = 1, count do
-            local offer = self:_roll_shop_queue_joker_offer()
+            local offer = self:_roll_shop_queue_joker_offer("buf", true)
             if offer and offer.id then
-                out[#out + 1] = { id = offer.id, edition = offer.edition or "base" }
+                out[#out + 1] = offer
             end
         end
         return out
@@ -12474,9 +12775,10 @@ function Game:_shop_pick_unique_joker_ids(count)
     local guard = 0
     while #out < count and guard < 80 do
         guard = guard + 1
-        local offer = self:_roll_shop_queue_joker_offer()
+        local offer = self:_roll_shop_queue_joker_offer("buf", true, picked_ids)
         if offer and offer.id and not joker_already_picked(offer.id) then
-            out[#out + 1] = { id = offer.id, edition = offer.edition or "base" }
+            out[#out + 1] = offer
+            picked_ids[offer.id] = true
         end
     end
     return out
@@ -12486,43 +12788,67 @@ function Game:_booster_build_choices(offer)
     local choices = {}
     local n = math.max(1, math.floor(tonumber(offer.card_count) or 3))
     local pack = offer.pack
-    local rare_spectral_placed = {}
-    local function maybe_replace_with_rare_spectral(base_kind, def_copy)
-        if type(def_copy) ~= "table" then return base_kind, def_copy end
-        local soul_def = CONSUMABLE_DEFS and CONSUMABLE_DEFS.spectral_soul
-        local black_hole_def = CONSUMABLE_DEFS and CONSUMABLE_DEFS.spectral_black_hole
+    local ante = tostring(math.floor(tonumber(self.ante) or 1))
+    local allow_duplicates = self:hasJoker("j_ring_master")
+    local used = {}
+    local type_names = { tarot = "Tarot", planet = "Planet", spectral = "Spectral" }
 
-        local can_soul = (pack == "arcana" or pack == "spectral")
-        local can_black_hole = (pack == "celestial" or pack == "spectral")
-        -- The reference gates each of these on `used_jokers`, which a created Soul / Black Hole
-        -- sets (`common_events.lua:2090-2097`), so one pack cannot roll the same rare twice and
-        -- one you already hold is off the table. Showman lifts both, as it lifts every cull.
-        local allow_duplicates = self:hasJoker("j_ring_master")
-        local function blocked(id)
-            if allow_duplicates then return false end
-            return rare_spectral_placed[id] or self:consumable_center_in_play(id)
+    local function center_blocked(id, ordinary_pool)
+        if not (CONSUMABLE_DEFS and CONSUMABLE_DEFS[id]) or self:is_challenge_banned(id) then
+            return true
+        end
+        if ordinary_pool and (id == "spectral_soul" or id == "spectral_black_hole") then
+            return true
+        end
+        if id:match("^planet_") and not self:planet_consumable_unlocked(id, CONSUMABLE_DEFS[id]) then
+            return true
+        end
+        return not allow_duplicates and (used[id] or self:consumable_center_in_play(id))
+    end
+
+    local function pool_choice(kind, append)
+        local ordered = REFERENCE_CONSUMABLE_POOL_ORDERS[kind]
+        local available = 0
+        for _, id in ipairs(ordered) do
+            if not center_blocked(id, true) then available = available + 1 end
+        end
+        if available == 0 then
+            local fallback = CONSUMABLE_POOL_FALLBACK[kind]
+            if fallback then used[fallback] = true end
+            return fallback
         end
 
-        -- 0.3% chance each per card slot (replacement behavior).
-        if can_black_hole and black_hole_def and not blocked("spectral_black_hole")
-            and self:_pack_rand_int(1, 1000) <= 3 then
-            local c = copy_table and copy_table(black_hole_def) or nil
-            if c then
-                c.id = "spectral_black_hole"
-                rare_spectral_placed["spectral_black_hole"] = true
-                return "spectral", c
+        local key = type_names[kind] .. append .. ante
+        local attempt = 1
+        while true do
+            local id = ordered[self:random(attempt == 1 and key or key .. "_resample" .. attempt,
+                1, #ordered)]
+            if not center_blocked(id, true) then
+                used[id] = true
+                return id
             end
+            attempt = attempt + 1
         end
-        if can_soul and soul_def and not blocked("spectral_soul")
-            and self:_pack_rand_int(1, 1000) <= 3 then
-            local c = copy_table and copy_table(soul_def) or nil
-            if c then
-                c.id = "spectral_soul"
-                rare_spectral_placed["spectral_soul"] = true
-                return "spectral", c
-            end
+    end
+
+    -- `create_card` checks Soul first, then Black Hole, with both polls advancing the same
+    -- per-type stream. A forced Telescope card skips both (`common_events.lua:2082-2118`).
+    local function create_consumable(kind, append, forced)
+        if forced then used[forced] = true return forced end
+        local type_name = type_names[kind]
+        if (kind == "tarot" or kind == "spectral")
+            and not center_blocked("spectral_soul", false)
+            and self:random("soul_" .. type_name .. ante) > 0.997 then
+            used.spectral_soul = true
+            return "spectral_soul"
         end
-        return base_kind, def_copy
+        if (kind == "planet" or kind == "spectral")
+            and not center_blocked("spectral_black_hole", false)
+            and self:random("soul_" .. type_name .. ante) > 0.997 then
+            used.spectral_black_hole = true
+            return "spectral_black_hole"
+        end
+        return pool_choice(kind, append)
     end
 
     local function consumable_choice(kind, id)
@@ -12530,82 +12856,52 @@ function Game:_booster_build_choices(offer)
         if type(def) ~= "table" or not copy_table then return end
         local c = copy_table(def)
         c.id = id
-        local out_kind, out_def = maybe_replace_with_rare_spectral(kind, c)
-        choices[#choices + 1] = { kind = out_kind, consumable_def = out_def, taken = false }
+        choices[#choices + 1] = { kind = c.kind or kind, consumable_def = c, taken = false }
     end
 
     if pack == "arcana" then
-        local tarots = self:_new_pack_pool("tarot", "pack")
-        local spectrals = nil
         for _ = 1, n do
-            local kind, id = "tarot", nil
-            -- Omen Globe replaces a Tarot 20% of the time (reference card.lua:1640-1645). The
-            -- reference rolls this before drawing, so a replaced slot never spends a Tarot.
-            if self:has_voucher("v_omen_globe") and self:_pack_rand_int(1, 100) > 80 then
-                spectrals = spectrals or self:_new_pack_pool("spectral", "pack")
-                id = self:_pack_pool_take(spectrals)
-                if id then kind = "spectral" end
-            end
-            if not id then
-                kind, id = "tarot", self:_pack_pool_take(tarots)
-            end
-            if not id then break end
+            local kind = self:has_voucher("v_omen_globe") and self:random("omen_globe") > 0.8
+                and "spectral" or "tarot"
+            local id = create_consumable(kind, kind == "spectral" and "ar2" or "ar1")
             consumable_choice(kind, id)
         end
     elseif pack == "celestial" then
-        local pool = self:_new_pack_pool("planet", "pack")
         local pref = nil
         if self:has_voucher("v_telescope") then
             pref = self:_planet_consumable_id_for_most_played_hand()
             if pref and not (CONSUMABLE_DEFS and CONSUMABLE_DEFS[pref]) then pref = nil end
         end
         for i = 1, n do
-            -- Telescope forces the first slot only, and forcing it consumes the planet so the
-            -- remaining slots cannot repeat it (reference card.lua:1737-1751 forces a key, which
-            -- both skips the pool draw and marks the centre used).
             local forced = (i == 1) and pref or nil
-            local id = self:_pack_pool_take(pool, forced)
-            if not id then break end
-            if forced then
-                -- A forced key means the reference never reaches its Soul / Black Hole roll
-                -- (`common_events.lua:2087`), so the guaranteed planet stays a planet.
-                local def = CONSUMABLE_DEFS[id]
-                if type(def) == "table" and copy_table then
-                    local c = copy_table(def)
-                    c.id = id
-                    choices[#choices + 1] = { kind = "planet", consumable_def = c, taken = false }
-                end
-            else
-                consumable_choice("planet", id)
-            end
+            consumable_choice("planet", create_consumable("planet", "pl1", forced))
         end
     elseif pack == "spectral" then
-        local pool = self:_new_pack_pool("spectral", "pack")
         for _ = 1, n do
-            local id = self:_pack_pool_take(pool)
-            if not id then break end
-            consumable_choice("spectral", id)
+            consumable_choice("spectral", create_consumable("spectral", "spe"))
         end
     elseif pack == "buffoon" then
         local entries = self:_shop_pick_unique_joker_ids(n)
         for _, e in ipairs(entries) do
             if e and e.id then
-                local sticker_params = self:_build_joker_sticker_params(JOKER_DEFS and JOKER_DEFS[e.id])
+                local sticker_params = e.stickers or {}
                 choices[#choices + 1] = {
                     kind = "joker",
                     joker_id = e.id,
                     edition = e.edition or "base",
                     taken = false,
-                    create_params = self:_build_joker_create_params(JOKER_DEFS and JOKER_DEFS[e.id], { edition = e.edition or "base" }, sticker_params),
+                    create_params = e.create_params or self:_build_joker_create_params(
+                        JOKER_DEFS and JOKER_DEFS[e.id], { edition = e.edition or "base" }, sticker_params),
                     stickers = sticker_params,
                 }
             end
         end
     elseif pack == "standard" then
         for _ = 1, n do
+            local enhanced = self:random("stdset" .. ante) > 0.6
             choices[#choices + 1] = {
                 kind = "playing",
-                playing_data = self:_roll_playing_card_data(true, "pack"),
+                playing_data = self:_roll_playing_card_data(true, "sta", enhanced),
                 taken = false,
             }
         end
@@ -13220,6 +13516,7 @@ function Game:enter_round_win_after_blind()
             self.challenge_joker_slots_disabled = true
         end
         self.ante = (tonumber(self.ante) or 1) + 1
+        self:reset_ante_joker_shared_picks()
         self:check_unlock("ante_up", { ante = self.ante })
         self:check_voucher_unlocks({ ante = self.ante, hand_size = self:get_effective_hand_size_limit() })
         -- The Ox's target is re-fixed only here, as a Boss blind falls

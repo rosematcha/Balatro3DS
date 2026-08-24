@@ -429,10 +429,11 @@ end
 
 function Game:_apply_erratic_deck()
     if not self.deck then return end
-    local suits = { "Hearts", "Clubs", "Diamonds", "Spades" }
     for _, c in ipairs(self.deck.cards or {}) do
-        c.rank  = self:random("erratic", 2, 14)
-        c.suit  = suits[self:random("erratic", 1, 4)]
+        -- The reference replaces each prototype with one full `G.P_CARDS` draw, rather than
+        -- rolling its rank and suit independently (`game.lua:2339-2343`).
+        local front = self:_random_reference_playing_card_front("erratic")
+        c.rank, c.suit = front.rank, front.suit
     end
 end
 

@@ -389,12 +389,12 @@ function MainMenuUI.handle_seed_textinput(game, text)
         -- The system keyboard hands back the whole string at once, and its own limit is a
         -- byte count three times the requested length (`platform/ctr/source/modules/
         -- keyboard_ext.cpp:14`), so apply the same filter inline typing uses.
-        local typed = tostring(text or ""):upper():gsub("[^0-9A-Z]", ""):sub(1, 8)
+        local typed = tostring(text or ""):upper():gsub("0", "O"):gsub("[^1-9A-Z]", ""):sub(1, 8)
         return MainMenuUI.finish_seed_entry(game, typed)
     end
     if not game._seed_entry_active then return false end
     local value = tostring(game._seed_entry_buffer or "") .. tostring(text or "")
-    game._seed_entry_buffer = value:upper():gsub("[^0-9A-Z]", ""):sub(1, 8)
+    game._seed_entry_buffer = value:upper():gsub("0", "O"):gsub("[^1-9A-Z]", ""):sub(1, 8)
     return true
 end
 

@@ -1,9 +1,8 @@
 ---@class Deck
 Deck = Object:extend()
 
-local SUITS = { "Hearts", "Clubs", "Diamonds", "Spades" }
-local MIN_RANK = 2
-local MAX_RANK = 14 -- 2..10, 11=J, 12=Q, 13=K, 14=A
+local SUITS = { "Clubs", "Diamonds", "Hearts", "Spades" }
+local RANKS = { 2, 3, 4, 5, 6, 7, 8, 9, 14, 11, 13, 12, 10 }
 
 --- Shallow copy of a card data table (rank/suit/extras). Avoids shared refs between hand and piles.
 ---@param data table|nil
@@ -29,19 +28,64 @@ function Deck:fill()
     self.cards = {}
     --local enhancements = { "mult", "steel", "none", "bonus", "gold", "glass", "lucky", "stone", "wild"}
     --local seals = { "gold", "red", "blue", "purple", "none" }
+    local sort_id = 0
     for _, suit in ipairs(SUITS) do
-        for rank = MIN_RANK, MAX_RANK do
+        for _, rank in ipairs(RANKS) do
+            sort_id = sort_id + 1
             --local enhancement = enhancements[math.random(1, #enhancements)]
             --local seal = seals[math.random(1, #seals)]
-            table.insert(self.cards, { rank = rank, suit = suit, enhancement = nil, seal = nil })
+            table.insert(self.cards, {
+                rank = rank, suit = suit, enhancement = nil, seal = nil, _sort_id = sort_id,
+            })
         end
     end
 end
 
-function Deck:shuffle()
+--- Assign the stable creation order that reference `CardArea:shuffle` restores before every
+--- Fisher-Yates pass. The base run builds and sorts card prototypes before creating cards
+--- (`game.lua:2365-2383`), so a later shuffle never depends on the previous shuffle's order.
+function Deck:assign_reference_sort_ids()
+    local suit_key = { Clubs = "C", Diamonds = "D", Hearts = "H", Spades = "S" }
+    local rank_key = { [10] = "T", [11] = "J", [12] = "Q", [13] = "K", [14] = "A" }
+    table.sort(self.cards, function(a, b)
+        local function key(card)
+            return (suit_key[card.suit] or "")
+                .. (rank_key[card.rank] or tostring(card.rank or ""))
+                .. tostring(card.enhancement or "")
+                .. tostring(card.modifier and card.modifier.edition or "")
+                .. tostring(card.seal or "")
+        end
+        return key(a) < key(b)
+    end)
+    for i, card in ipairs(self.cards) do card._sort_id = i end
+end
+
+function Deck:shuffle(seed_key)
     local n = #self.cards
+    local next_sort_id = 0
+    for _, card in ipairs(self.cards) do
+        next_sort_id = math.max(next_sort_id, tonumber(card._sort_id) or 0)
+    end
+    for _, card in ipairs(self.cards) do
+        if card._sort_id == nil then
+            next_sort_id = next_sort_id + 1
+            card._sort_id = next_sort_id
+        end
+    end
+    table.sort(self.cards, function(a, b)
+        return (tonumber(a._sort_id) or 0) < (tonumber(b._sort_id) or 0)
+    end)
+    local rng = self.game and self.game._reference_math_rng
+    if self.game and rng and not self.game._legacy_rng_streams then
+        rng:seed(self.game:pseudoseed(seed_key or "shuffle"))
+    end
     for i = n, 2, -1 do
-        local j = self.game and self.game:random("deck", 1, i) or math.random(1, i)
+        local j
+        if rng and not self.game._legacy_rng_streams then
+            j = rng:random(1, i)
+        else
+            j = self.game and self.game:random("deck", 1, i) or math.random(1, i)
+        end
         self.cards[i], self.cards[j] = self.cards[j], self.cards[i]
     end
 end

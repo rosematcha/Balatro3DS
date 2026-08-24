@@ -117,13 +117,16 @@ suite.test("Economy Tag doubles the balance rather than tripling it", function()
 end)
 
 suite.test("Standard Pack playing cards use enhancement seal and edition rolls", function()
-    local draws = { 2, 1, 1, 1, 1, 1, 9999 }
-    local original = game._pack_rand_int
-    game._pack_rand_int = function(_, _, _)
-        return table.remove(draws, 1)
+    local original = game.random
+    game.random = function(_, key, minimum)
+        if key == "stdset1" then return 0.7 end
+        if key == "standard_edition1" then return 0.999 end
+        if key == "stdseal1" or key == "stdsealtype1" then return 0.9 end
+        if minimum ~= nil then return 1 end
+        return 0
     end
     local choice = game:_booster_build_choices({ pack = "standard", card_count = 1 })[1]
-    game._pack_rand_int = original
+    game.random = original
 
     T.assert_eq(choice.playing_data.enhancement, "bonus")
     T.assert_eq(choice.playing_data.seal, "red")
@@ -132,20 +135,24 @@ end)
 
 suite.test("Omen Globe replaces Tarot choices only above the 80 percent threshold", function()
     game.vouchers = { v_omen_globe = true }
-    local original_take = game._pack_pool_take
-    local original_rand = game._pack_rand_int
-    game._pack_pool_take = function(_, pool)
-        return pool.kind == "tarot" and "tarot_strength" or "spectral_aura"
-    end
+    local original_rand = game.random
 
-    -- The only roll the arcana path makes here is the Omen Globe threshold; the draw is stubbed.
-    game._pack_rand_int = function() return 80 end
+    game.random = function(_, key, minimum)
+        if key == "omen_globe" then return 0.8 end
+        if key:match("^soul_") then return 0 end
+        if minimum ~= nil then return 12 end -- Strength in the reference Tarot pool.
+        return 0
+    end
     T.assert_eq(game:_booster_build_choices({ pack = "arcana", card_count = 1 })[1].kind, "tarot")
-    game._pack_rand_int = function() return 81 end
+    game.random = function(_, key, minimum)
+        if key == "omen_globe" then return 0.81 end
+        if key:match("^soul_") then return 0 end
+        if minimum ~= nil then return 5 end -- Aura in the reference Spectral pool.
+        return 0
+    end
     T.assert_eq(game:_booster_build_choices({ pack = "arcana", card_count = 1 })[1].kind, "spectral")
 
-    game._pack_pool_take = original_take
-    game._pack_rand_int = original_rand
+    game.random = original_rand
 end)
 
 suite.test("edition Jokers sell from their edition-adjusted cost", function()
@@ -170,15 +177,15 @@ end)
 
 suite.test("Magic Trick adds four playing-card shop weights", function()
     game.vouchers = { v_magic_trick = true }
-    local max_roll
-    local original = game._shop_rand_int
-    game._shop_rand_int = function(_, lo, hi)
-        if not max_roll then max_roll = hi end
-        return hi
+    local polled_total
+    local original = game._shop_rate_poll
+    game._shop_rate_poll = function(_, total)
+        polled_total = total
+        return total
     end
     local offer = game:_generate_next_shop_queue_offer()
-    game._shop_rand_int = original
-    T.assert_eq(max_roll, 32, "20 Joker + 4 Tarot + 4 Planet + 4 Magic Trick")
+    game._shop_rate_poll = original
+    T.assert_eq(polled_total, 32, "20 Joker + 4 Tarot + 4 Planet + 4 Magic Trick")
     T.assert_eq(offer.kind, "playing_card")
 end)
 
