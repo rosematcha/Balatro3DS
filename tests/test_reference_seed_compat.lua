@@ -3,6 +3,10 @@ local bootstrap = require("tests.bootstrap")
 
 local suite = T.suite()
 
+-- These fixtures assume a default profile. Earlier files earn unlocks that persist in the
+-- stub's in-memory save, and a different unlock set rolls a different Joker pool.
+bootstrap.load()._test.reset_files()
+
 suite.test("ALEEB123 matches reference pseudorandom fixtures", function()
     local game = bootstrap.new_game("ALEEB123")
     local fixtures = {
