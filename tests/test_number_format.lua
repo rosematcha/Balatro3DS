@@ -29,8 +29,9 @@ end)
 suite.test("non-integers keep decimals, fewer as the number grows", function()
     T.assert_eq(NumberFormat.format(1.25), "1.25")
     T.assert_eq(NumberFormat.format(12.5), "12.5")
-    T.assert_eq(NumberFormat.format(1234.5), "1,234")
-    T.assert_eq(NumberFormat.format(1234567.5), "1,234,568")
+    -- Off the .5 tie: how `%.0f` breaks one differs between LuaJIT builds.
+    T.assert_eq(NumberFormat.format(1234.4), "1,234")
+    T.assert_eq(NumberFormat.format(1234567.6), "1,234,568")
 end)
 
 suite.test("the switch point hands off to scientific notation", function()
