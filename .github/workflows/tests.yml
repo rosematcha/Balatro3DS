@@ -1,0 +1,21 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The suite runs headless against tests/love_stub.lua, so no LOVE/LovePotion
+      # runtime is needed -- just the interpreter the 3DS build targets.
+      - name: Install LuaJIT
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y luajit
+
+      - name: Run tests
+        run: ./tests/run.sh
